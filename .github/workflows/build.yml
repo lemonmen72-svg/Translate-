@@ -45,10 +45,23 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 tools/fetch_sherpa.py
 
+      # Лог Gradle со стектрейсами разрастается до тысяч строк, и строки с
+      # ошибками компиляции тонут в середине. Складываем вывод в файл и на
+      # неудаче печатаем только их.
       - name: Собрать debug APK
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug
+          set +e
+          ./gradlew --no-daemon assembleDebug 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "===================== ОШИБКИ КОМПИЛЯЦИИ ====================="
+            grep -E "^e: |^w: .*error|error:|Unresolved reference|Type mismatch" build.log \
+              | head -60 || true
+            echo "===================== КОНЕЦ ================================"
+          fi
+          exit $status
 
       - name: Переименовать APK
         run: |
