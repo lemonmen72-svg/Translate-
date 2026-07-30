@@ -15,6 +15,13 @@ on:
 permissions:
   contents: write
 
+# Два одновременных прогона делали `gh release upload --clobber` на один и тот же
+# релиз и затирали ассеты друг друга: так пропал whisper-small-decoder. Теперь
+# прогоны сериализуются.
+concurrency:
+  group: models-release
+  cancel-in-progress: false
+
 jobs:
   small-models:
     runs-on: ubuntu-latest
@@ -116,3 +123,11 @@ jobs:
               --title "Модели для офлайн-переводчика" \
               --notes "Распакованные модели: VAD, Whisper, шумоподавление, пунктуация, Opus-MT. Собрано workflow «Подготовка моделей»."
           fi
+
+      # Манифест обещает приложению набор файлов, и если какого-то из них в
+      # релизе нет, ошибка вылезет только на устройстве при загрузке моделей.
+      # Поэтому проверяем сразу и дозаливаем пропавшее.
+      - name: Проверить, что релиз соответствует манифесту
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/verify_release.py
