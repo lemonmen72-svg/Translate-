@@ -178,6 +178,10 @@ class Pipeline(
 
                 is StreamingAsr.Update.Final -> {
                     SessionState.setPartial("")
+                    // Буфер вычитывается до проверки на мусор, а не после: иначе
+                    // звук отброшенной реплики остался бы в буфере и попал в
+                    // эмбеддинг следующей.
+                    val utteranceAudio = recentAudio?.drain()
                     // Фильтр нужен и здесь. Потоковый трансдьюсер не зацикливается
                     // на тишине, как Whisper, но мусорные короткие результаты и
                     // повторы всё равно бывают. Длительность не передаём: в
@@ -194,7 +198,7 @@ class Pipeline(
                                 endedAtMs = System.currentTimeMillis(),
                                 asrMs = elapsed,
                                 segmentDurationMs = 0,
-                                speaker = identifySpeaker(),
+                                speaker = identifySpeaker(utteranceAudio),
                             )
                         )
                     }
@@ -255,14 +259,13 @@ class Pipeline(
     /**
      * Метка говорящего по звуку последней реплики.
      *
-     * Буфер вычитывается всегда, даже когда различение выключено: иначе в него
-     * копился бы звук всей сессии и в эмбеддинг следующей реплики попал бы хвост
-     * предыдущей.
+     * Звук передаётся снаружи, а не берётся из буфера здесь: буфер надо
+     * вычитывать на каждой завершённой реплике, включая отброшенные как мусор,
+     * иначе их звук попал бы в эмбеддинг следующей.
      */
-    private suspend fun identifySpeaker(): String? {
-        val samples = recentAudio?.drain() ?: return null
+    private suspend fun identifySpeaker(samples: FloatArray?): String? {
         val t = tagger ?: return null
-        if (samples.isEmpty()) return null
+        if (samples == null || samples.isEmpty()) return null
         val label = withContext(Dispatchers.Default) {
             runCatching { t.identify(samples) }.getOrNull()
         }
