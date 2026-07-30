@@ -25,3 +25,11 @@ jobs:
           pip install transformers sentencepiece sacremoses
       - name: Перевести тестовые фразы
         run: python3 tools/compare_mt.py
+
+      # Главная проверка: beam search в приложении написан с нуля, и ошибка в нём
+      # молча портит весь перевод. Здесь тот же алгоритм повторён на Python поверх
+      # экспортированного ONNX и сравнён с эталоном transformers.
+      - name: Поставить optimum для валидации ONNX
+        run: pip install "optimum[onnxruntime]" onnx numpy
+      - name: Сверить мой beam search с эталоном
+        run: python3 tools/validate_mt.py
