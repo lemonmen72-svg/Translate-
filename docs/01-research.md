@@ -130,7 +130,7 @@ whisper.cpp при этом не выбрасываем — оставляем �
 | `Helsinki-NLP/opus-mt-en-ru` | **подтверждено**: экспортировано в ONNX в CI |
 | `Helsinki-NLP/opus-mt-ja-ru` | **подтверждено**: экспортировано в ONNX в CI |
 | `Helsinki-NLP/opus-mt-zh-en` | **подтверждено**: экспортировано в ONNX в CI |
-| `Helsinki-NLP/opus-mt-zh-ru` | **подтверждено, что не существует**: сборка упала на загрузке модели |
+| `Helsinki-NLP/opus-mt-zh-ru` | **не существует**: Hugging Face отдаёт RepositoryNotFoundError |
 
 Проверка сделана эмпирически: пары добавлены в матрицу сборки моделей, и в
 релиз попали ровно те, что реально скачались с Hugging Face. Прямой японско-

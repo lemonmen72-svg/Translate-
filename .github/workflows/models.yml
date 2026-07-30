@@ -62,7 +62,7 @@ jobs:
       # остальные всё равно нужны.
       fail-fast: false
       matrix:
-        pair: [en-ru, ja-ru, zh-en, zh-ru]
+        pair: [en-ru, ja-ru, zh-en]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -38,16 +38,18 @@ WHISPER = {
     "whisper-small": "sherpa-onnx-whisper-small",
 }
 
-# Пары Opus-MT. zh-ru прямой модели у Helsinki-NLP нет, поэтому китайский
-# собирается как zh-en плюс уже имеющаяся en-ru.
+# Пары Opus-MT.
+#
+# Прямой zh-ru здесь нет намеренно: проверено сборкой —
+# Helsinki-NLP/opus-mt-zh-ru отдаёт RepositoryNotFoundError, такой модели не
+# существует. Поэтому китайский переводится как zh-en плюс en-ru.
+# Приложение выбирает цепочку по манифесту (SourceLang.opusMtChains), так что
+# достаточно добавить сюда "zh-ru", если модель когда-нибудь появится, — код
+# трогать не придётся.
 OPUS_PAIRS = {
     "en-ru": "Helsinki-NLP/opus-mt-en-ru",
     "ja-ru": "Helsinki-NLP/opus-mt-ja-ru",
     "zh-en": "Helsinki-NLP/opus-mt-zh-en",
-    # Существование прямой zh-ru не подтверждено. Пробуем: если соберётся,
-    # приложение возьмёт её вместо перевода через английский. Если нет — job
-    # упадёт изолированно, остальные пары не пострадают.
-    "zh-ru": "Helsinki-NLP/opus-mt-zh-ru",
 }
 
 
