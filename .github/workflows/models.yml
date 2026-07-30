@@ -156,13 +156,29 @@ jobs:
           path: downloaded
           pattern: models-*
           merge-multiple: true
+      # Манифест собирается ПОВЕРХ прежнего, а не с нуля. Иначе один упавший job
+      # молча выкидывает свои ключи из манифеста, который получают все устройства,
+      # хотя файлы в релизе остаются на месте: приложение перестаёт находить модель,
+      # которая физически есть. Ровно так один раз пропал whisper-small.
+      - name: Забрать прежний манифест
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p previous
+          gh release download models-v1 --pattern manifest.json --dir previous || \
+            echo "прежнего манифеста нет, собираю с нуля"
+          ls -la previous || true
       - name: Собрать каталог выдачи и манифест
         run: |
           mkdir -p models_out
           find downloaded -type f -exec cp -v {} models_out/ \;
           rm -f models_out/manifest.json
           ls -la models_out
-          python3 tools/build_models.py manifest
+          if [ -f previous/manifest.json ]; then
+            python3 tools/build_models.py manifest --merge-manifest previous/manifest.json
+          else
+            python3 tools/build_models.py manifest
+          fi
           cat models_out/manifest.json
       - name: Опубликовать релиз моделей
         env:

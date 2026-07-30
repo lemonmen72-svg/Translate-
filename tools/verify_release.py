@@ -53,8 +53,30 @@ def main() -> int:
             )
             broken.append(name)
 
+    # Обратная проверка: файл в релизе есть, а ключа в манифесте нет. Это тоже
+    # поломка, и раньше она была невидимой — приложение не находит модель, которая
+    # физически лежит в релизе, потому что искать его нечем.
+    known_files = {entry["file"] for entry in manifest.values()}
+    orphans = sorted(
+        name for name in assets
+        if name != "manifest.json" and name not in known_files
+    )
+    if orphans:
+        print(
+            "БЕЗ КЛЮЧА в манифесте (приложение их не увидит): "
+            + ", ".join(orphans),
+            flush=True,
+        )
+
     if not broken:
         print(f"Релиз в порядке: {len(manifest)} файлов на месте", flush=True)
+        if orphans:
+            print(
+                f"Но {len(orphans)} файлов остались без ключа — проверьте KEY_BY_FILE "
+                "в tools/build_models.py",
+                file=sys.stderr,
+            )
+            return 1
         return 0
 
     print(f"\nДозаливаю {len(broken)} файлов", flush=True)

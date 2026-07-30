@@ -145,6 +145,12 @@ class TranslateService : LifecycleService() {
                 Log.e(TAG, "Сессия упала", t)
                 SessionState.setStage(Stage.Error(t.message ?: "сессия прервана"))
             } finally {
+                // Освобождаем ЗДЕСЬ, а не в stopSession. Раньше это делал главный
+                // поток сразу после sessionJob.cancel(), не дожидаясь конца работы:
+                // отмена корутины кооперативная, и эта корутина могла быть внутри
+                // нативного вызова. Освобождение нативных объектов под ним — не
+                // исключение Kotlin, а падение всего процесса.
+                runCatching { runner.release() }
                 stopSession()
             }
         }
@@ -201,13 +207,20 @@ class TranslateService : LifecycleService() {
         }
     }
 
+    /**
+     * Останавливает сессию.
+     *
+     * Зовётся из двух мест: по кнопке «Стоп» с главного потока и из finally самой
+     * сессионной корутины. Поэтому пайплайн здесь не освобождается — это делает
+     * корутина, когда действительно закончила работу. Отсюда только отмена, а
+     * освобождение придёт следом само.
+     */
     private fun stopSession() {
         sessionJob?.cancel()
         sessionJob = null
         runCatching { projection?.unregisterCallback(projectionCallback) }
         runCatching { projection?.stop() }
         projection = null
-        pipeline?.release()
         pipeline = null
         thermal.stop()
         mainHandler.post { overlay?.hide(); overlay = null }

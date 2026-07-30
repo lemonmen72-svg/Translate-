@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.translate.overlay.asr.AsrResult
@@ -64,13 +65,25 @@ class Pipeline(
         val durationMs: Long get() = samples.size * 1000L / AudioCapture.SAMPLE_RATE
     }
 
-    /** Готовый к переводу текст с моментом, когда речь закончилась. */
+    /**
+     * Готовый к переводу текст.
+     *
+     * Звук реплики передаётся сырым, а метка говорящего считается уже в
+     * потребителе. Так сделано намеренно: эмбеддинг голоса — это инференс на
+     * несколько сотен миллисекунд, и раньше он считался прямо внутри collect по
+     * кадрам захвата. На это время сбор кадров останавливался, а звук начала
+     * следующей реплики молча терялся в буфере AudioRecord.
+     */
     private class Utterance(
         val text: String,
         val endedAtMs: Long,
         val asrMs: Long,
         val segmentDurationMs: Long,
-        /** Метка говорящего, если различение голосов включено и сработало. */
+        /** Звук реплики для определения голоса, или null, если он не нужен. */
+        val audio: FloatArray? = null,
+        /** Сколько в [audio] секунд именно речи. */
+        val speechSeconds: Float = 0f,
+        /** Готовая метка: заполняется только когда голос уже определён. */
         val speaker: String? = null,
     )
 
@@ -148,7 +161,18 @@ class Pipeline(
             // Обрывок, зависший в ожидании продолжения, надо перевести: иначе
             // последняя фраза сессии просто исчезнет.
             runCatching { flushHeld(force = true) }
-            consumer.cancel()
+
+            // Именно cancelAndJoin, а не cancel: отмена корутины кооперативная, и
+            // потребитель, зашедший в нативный вызов (эмбеддинг голоса, перевод),
+            // продолжит работать. Если сразу после этого освободить нативные
+            // объекты, получится обращение по освобождённому указателю — падение
+            // всего процесса, которое не ловится runCatching. NonCancellable нужен
+            // потому, что сюда мы попадаем как раз по отмене, и join без него
+            // бросил бы исключение немедленно.
+            withContext(kotlinx.coroutines.NonCancellable) {
+                runCatching { consumer.cancelAndJoin() }
+                runCatching { speech?.stop() }
+            }
         }
     }
 
@@ -182,6 +206,8 @@ class Pipeline(
                     // звук отброшенной реплики остался бы в буфере и попал в
                     // эмбеддинг следующей.
                     val utteranceAudio = recentAudio?.drain()
+                    val utteranceSpeech = utteranceAudio?.size
+                        ?.toFloat()?.div(AudioCapture.SAMPLE_RATE) ?: 0f
                     // Фильтр нужен и здесь. Потоковый трансдьюсер не зацикливается
                     // на тишине, как Whisper, но мусорные короткие результаты и
                     // повторы всё равно бывают. Длительность не передаём: в
@@ -198,7 +224,8 @@ class Pipeline(
                                 endedAtMs = System.currentTimeMillis(),
                                 asrMs = elapsed,
                                 segmentDurationMs = 0,
-                                speaker = identifySpeaker(utteranceAudio),
+                                audio = utteranceAudio,
+                                speechSeconds = utteranceSpeech,
                             )
                         )
                     }
@@ -234,9 +261,13 @@ class Pipeline(
                         endedAtMs = segment.endedAtMs,
                         asrMs = result.elapsedMs,
                         segmentDurationMs = segment.durationMs,
-                        speaker = tagger?.let { t ->
-                            withContext(Dispatchers.Default) { t.identify(segment.samples) }
-                        },
+                        // На эмбеддинг идёт исходный звук, а не прошедший
+                        // шумоподавление: денойз меняет тембр, а именно по тембру
+                        // и различаются голоса.
+                        audio = if (tagger != null) segment.samples else null,
+                        // В офлайн-режиме отрезок пришёл от VAD, то есть это уже
+                        // речь целиком, и мерить речевую часть отдельно не нужно.
+                        speechSeconds = segment.durationMs / 1000f,
                     )
                 )
             }
@@ -257,17 +288,17 @@ class Pipeline(
     }
 
     /**
-     * Метка говорящего по звуку последней реплики.
+     * Метка говорящего по звуку реплики.
      *
-     * Звук передаётся снаружи, а не берётся из буфера здесь: буфер надо
-     * вычитывать на каждой завершённой реплике, включая отброшенные как мусор,
-     * иначе их звук попал бы в эмбеддинг следующей.
+     * Зовётся из потребителя реплик, а не из сборщика кадров: инференс занимает
+     * сотни миллисекунд, и в сборщике он останавливал захват звука.
      */
-    private suspend fun identifySpeaker(samples: FloatArray?): String? {
+    private suspend fun identifySpeaker(utterance: Utterance): String? {
         val t = tagger ?: return null
-        if (samples == null || samples.isEmpty()) return null
+        val samples = utterance.audio ?: return null
+        if (samples.isEmpty()) return null
         val label = withContext(Dispatchers.Default) {
-            runCatching { t.identify(samples) }.getOrNull()
+            runCatching { t.identify(samples, utterance.speechSeconds) }.getOrNull()
         }
         SessionState.setSpeakerCount(t.count())
         return label
@@ -315,6 +346,10 @@ class Pipeline(
     private suspend fun translateAndShow(utterance: Utterance) {
         val optionalAllowed = !settings.thermalThrottle || thermal.optionalStagesAllowed()
 
+        // Голос определяется здесь, а не в сборщике кадров: инференс на сотни
+        // миллисекунд внутри collect останавливал захват звука.
+        val speakerLabel = utterance.speaker ?: identifySpeaker(utterance)
+
         var sourceText = utterance.text
         var punctuationMs = 0L
         punctuator?.takeIf { optionalAllowed }?.let { p ->
@@ -323,27 +358,37 @@ class Pipeline(
             punctuationMs = (System.nanoTime() - started) / 1_000_000
         }
 
+        var outLabel = speakerLabel
         if (settings.mergeFragments) {
             // Обрывок и продолжение от разных людей склеивать нельзя: получится
             // фраза, которой никто не говорил. Поэтому при смене голоса обрывок
             // сначала выводится сам — иначе он вышел бы после новой реплики и
             // субтитры пошли бы в обратном порядке.
+            //
+            // Оговорка, которую нельзя замалчивать: правило срабатывает только
+            // когда обе метки известны. Реплика без метки (короткая или тихая)
+            // склеивается с чем угодно. Запретить склейку через неизвестный голос
+            // было бы хуже: коротких реплик много, а склейка обрывков — главный
+            // рычаг качества перевода.
             val waiting = heldFragment.get()
-            if (waiting?.speaker != null && utterance.speaker != null &&
-                waiting.speaker != utterance.speaker
+            if (waiting?.speaker != null && speakerLabel != null &&
+                waiting.speaker != speakerLabel
             ) {
                 flushHeld(force = true)
             }
 
-            val merged = mergeWithHeld(sourceText, utterance.speaker)
+            val merged = mergeWithHeld(sourceText, speakerLabel)
             if (merged == null) {
                 SessionState.setStage(Stage.Listening)
                 return
             }
-            sourceText = merged
+            sourceText = merged.text
+            // Метку берём от начала склеенной фразы: её произнёс тот, кто начал
+            // говорить, а у продолжения метки может не быть вовсе.
+            outLabel = merged.speaker
         }
 
-        emit(sourceText, utterance, punctuationMs, utterance.speaker)
+        emit(sourceText, utterance, punctuationMs, outLabel)
     }
 
     /** Перевод по предложениям и вывод: общий хвост для обычной реплики и обрывка. */
@@ -402,18 +447,24 @@ class Pipeline(
      * диалоге продолжения не будет, и текст пропал бы совсем. Возвращает готовый к
      * переводу текст либо null, если решено ждать.
      */
-    private fun mergeWithHeld(text: String, speakerLabel: String?): String? {
+    /** Результат склейки: текст и метка того, кто начал фразу. */
+    private class Merged(val text: String, val speaker: String?)
+
+    private fun mergeWithHeld(text: String, speakerLabel: String?): Merged? {
         val held = heldFragment.getAndSet(null)
         val combined = if (held == null) text.trim() else "${held.text} ${text.trim()}".trim()
         val startedAtMs = held?.atMs ?: System.currentTimeMillis()
         val waitedMs = System.currentTimeMillis() - startedAtMs
 
+        // Метка принадлежит началу фразы: продолжение могло прийти без метки.
+        val label = held?.speaker ?: speakerLabel
+
         val last = combined.lastOrNull()
         val finished = last != null && last in SENTENCE_END
         if (finished || combined.length >= FRAGMENT_MAX_LEN || waitedMs >= HOLD_MAX_MS) {
-            return combined
+            return Merged(combined, label)
         }
-        heldFragment.set(Held(combined, startedAtMs, held?.speaker ?: speakerLabel))
+        heldFragment.set(Held(combined, startedAtMs, label))
         return null
     }
 
@@ -505,7 +556,9 @@ class Pipeline(
         // Различение голосов. Модель отдельная и необязательная: не поднялась —
         // субтитры просто идут без меток.
         if (settings.speakerLabels) {
-            recentAudio = RecentAudio()
+            // Буфер нужен только потоковому режиму: в офлайне отрезок речи даёт
+            // сам VAD, и накапливать звук отдельно незачем.
+            recentAudio = if (profile.asrMode == AsrMode.STREAMING) RecentAudio() else null
             tagger = runCatching {
                 val entry = store.resolve(listOf(ModelKeys.SPEAKER_MODEL))
                 store.ensure(entry, progress)

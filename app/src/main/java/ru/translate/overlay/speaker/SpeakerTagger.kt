@@ -23,7 +23,9 @@ import ru.translate.overlay.capture.AudioCapture
  *
  * * **Короткие реплики.** На отрезке короче [MIN_IDENTIFY_SEC] эмбеддинг шумный, и
  *   один и тот же человек легко получает две метки. Такие реплики остаются без
- *   метки — это честнее, чем метка наугад.
+ *   метки — это честнее, чем метка наугад. Длительность приходит снаружи и
+ *   считается по речи, а не по длине переданного массива: иначе тишина в буфере
+ *   пробивала бы этот порог, ничего не значащим объёмом данных.
  * * **Запись нового голоса** идёт только с отрезка не короче [MIN_ENROLL_SEC]:
  *   профиль, записанный с шумного обрывка, потом портит все сравнения с ним.
  * * **Музыка и шум** дают свои «голоса». Отсюда потолок [MAX_SPEAKERS]: дальше
@@ -54,12 +56,27 @@ class SpeakerTagger(
     private var nextIndex = 1
 
     /**
+     * Освобождён ли уже нативный объект.
+     *
+     * Нужен вместе с synchronized на всех методах, потому что release() приходит из
+     * другого потока — при остановке сессии. Без этого вызов уходил бы в JNI по
+     * освобождённому указателю, а такое падение не ловится runCatching: это
+     * SIGSEGV всего процесса, а не исключение Kotlin.
+     */
+    private var released = false
+
+    /**
      * Метка говорящего для отрезка речи, или null, если сказать нечего.
+     *
+     * [speechSeconds] — длительность именно речи в переданном отрезке. Считать её
+     * по размеру массива нельзя: в него могла попасть тишина.
      *
      * Вызывать из фонового потока: внутри JNI и инференс.
      */
-    fun identify(samples: FloatArray): String? {
-        val seconds = samples.size.toFloat() / AudioCapture.SAMPLE_RATE
+    @Synchronized
+    fun identify(samples: FloatArray, speechSeconds: Float): String? {
+        if (released) return null
+        val seconds = speechSeconds
         if (seconds < MIN_IDENTIFY_SEC) return null
 
         val embedding = runCatching { embed(samples) }
@@ -98,9 +115,16 @@ class SpeakerTagger(
     }
 
     /** Сколько разных голосов уже встретилось: показывается в интерфейсе. */
-    fun count(): Int = runCatching { manager.numSpeakers() }.getOrDefault(0)
+    @Synchronized
+    fun count(): Int {
+        if (released) return 0
+        return runCatching { manager.numSpeakers() }.getOrDefault(0)
+    }
 
+    @Synchronized
     fun release() {
+        if (released) return
+        released = true
         runCatching { manager.release() }
         runCatching { extractor.release() }
     }

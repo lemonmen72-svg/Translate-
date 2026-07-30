@@ -90,7 +90,7 @@ class SubtitleOverlay(
             text = "Слушаю"
         }
 
-        val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.9f).toInt()
+        val maxTextWidth = maxTextWidth()
 
         // Предыдущая фраза тусклой строкой над текущей. Субтитры теперь главный
         // вывод приложения, а одна строка живёт всего пару секунд: отвёл взгляд —
@@ -277,6 +277,17 @@ class SubtitleOverlay(
         translationView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp)
         previousView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 3f)
         sourceView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 3f)
+        // Строка предварительной гипотезы тоже подчиняется настройке шрифта: без
+        // этого она оставалась прежнего размера до конца сессии.
+        partialView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 4f)
+
+        // Максимальную ширину надо переприсвоить: при повороте экрана прежнее
+        // значение считалось по старой ширине.
+        val maxTextWidth = maxTextWidth()
+        previousView?.maxWidth = maxTextWidth
+        translationView?.maxWidth = maxTextWidth
+        sourceView?.maxWidth = maxTextWidth
+        partialView?.maxWidth = maxTextWidth
         sourceView?.visibility = when {
             collapsed -> View.GONE
             settings.showSourceText -> View.VISIBLE
@@ -291,9 +302,17 @@ class SubtitleOverlay(
         statusView = null
         previousView = null
         translationView = null
+        // История сбрасывается: иначе после повторного show в тусклой строке
+        // всплыла бы фраза из прошлой сессии.
+        lastTranslation = null
+        lastSpeaker = null
         sourceView = null
         partialView = null
     }
+
+    /** Ограничение ширины текста: девять десятых экрана. */
+    private fun maxTextWidth(): Int =
+        (context.resources.displayMetrics.widthPixels * 0.9f).toInt()
 
     private fun backgroundColor(): Int {
         val alpha = (settings.overlayOpacity.coerceIn(0f, 1f) * 255).toInt()
