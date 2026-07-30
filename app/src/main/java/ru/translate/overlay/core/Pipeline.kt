@@ -144,14 +144,25 @@ class Pipeline(
 
                 is StreamingAsr.Update.Final -> {
                     SessionState.setPartial("")
-                    offer(
-                        Utterance(
-                            text = update.text,
-                            endedAtMs = System.currentTimeMillis(),
-                            asrMs = elapsed,
-                            segmentDurationMs = 0,
+                    // Фильтр нужен и здесь. Потоковый трансдьюсер не зацикливается
+                    // на тишине, как Whisper, но мусорные короткие результаты и
+                    // повторы всё равно бывают. Длительность не передаём: в
+                    // потоковом режиме её нет, и проверка скорости речи
+                    // пропускается сама.
+                    val verdict = HallucinationFilter.check(update.text, 0)
+                    if (verdict is HallucinationFilter.Verdict.Reject) {
+                        SessionState.noteSkipped()
+                        SessionState.setStage(Stage.Skipped(verdict.reason))
+                    } else {
+                        offer(
+                            Utterance(
+                                text = update.text,
+                                endedAtMs = System.currentTimeMillis(),
+                                asrMs = elapsed,
+                                segmentDurationMs = 0,
+                            )
                         )
-                    )
+                    }
                 }
 
                 StreamingAsr.Update.Nothing -> Unit
