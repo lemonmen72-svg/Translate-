@@ -276,7 +276,12 @@ class SubtitleOverlay(
         if (scheduled) return
         if (queue.isEmpty()) return
 
-        val minVisible = (MIN_VISIBLE_MS / (1 + queue.size))
+        // Делим на число ждущих фраз, а НЕ на (1 + число ждущих). В этой точке в
+        // очереди всегда лежит хотя бы та фраза, которую сейчас покажем, поэтому
+        // лишняя единица уполовинивала выдержку: заявленные 2.2 с превращались в
+        // 1.1 с даже для одиночной фразы — ровно та «секунда», которую
+        // пользователь назвал нечитаемой.
+        val minVisible = (MIN_VISIBLE_MS / queue.size.coerceAtLeast(1))
             .coerceAtLeast(MIN_VISIBLE_FLOOR_MS)
         val waited = SystemClock.uptimeMillis() - lastShownAtMs
         if (waited < minVisible) {

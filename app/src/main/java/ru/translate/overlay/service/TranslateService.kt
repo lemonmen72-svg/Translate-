@@ -174,8 +174,9 @@ class TranslateService : LifecycleService() {
             }
         }
         lifecycleScope.launch {
-            SessionState.current.collect { phrase ->
-                phrase ?: return@collect
+            // Канал, а не StateFlow: подряд идущие фразы одной реплики StateFlow
+            // конфлейтит, и текст молча пропадал.
+            SessionState.phrases.collect { phrase ->
                 overlay?.setPhrase(phrase.translatedText, phrase.sourceText, phrase.speaker)
             }
         }

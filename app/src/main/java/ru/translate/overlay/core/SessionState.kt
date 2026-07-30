@@ -1,8 +1,12 @@
 package ru.translate.overlay.core
 
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 
 /**
@@ -91,6 +95,22 @@ object SessionState {
     private val _current = MutableStateFlow<Phrase?>(null)
     val current: StateFlow<Phrase?> = _current.asStateFlow()
 
+    /**
+     * Поток фраз для оверлея — именно канал, а не StateFlow.
+     *
+     * StateFlow конфлейтит: когда перевод отдаёт несколько предложений подряд
+     * быстрее, чем оверлей успевает их забрать, промежуточные значения теряются
+     * молча. Для индикатора это нормально, для субтитров — потеря текста. Канал с
+     * запасом хранит все фразы, а при переполнении вытесняет самые старые, потому
+     * что показывать пятиминутной давности перевод бессмысленно.
+     */
+    private val phraseEvents = Channel<Phrase>(
+        capacity = 32,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
+    val phrases: Flow<Phrase> = phraseEvents.receiveAsFlow()
+
     private val _history = MutableStateFlow<List<Phrase>>(emptyList())
     val history: StateFlow<List<Phrase>> = _history.asStateFlow()
 
@@ -147,6 +167,7 @@ object SessionState {
 
     fun publish(phrase: Phrase) {
         _current.value = phrase
+        phraseEvents.trySend(phrase)
         _history.update { (it + phrase).takeLast(MAX_HISTORY) }
     }
 
