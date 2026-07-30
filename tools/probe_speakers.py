@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import urllib.error
 import urllib.request
 import zipfile
@@ -149,8 +150,44 @@ def probe_assets() -> dict[str, list[tuple[str, float]]]:
     return hits
 
 
+def dump_api() -> None:
+    """Печатает настоящие сигнатуры классов через javap.
+
+    Иначе код против незнакомого API пишется угадыванием имён методов, и каждая
+    ошибка стоит отдельного прогона сборки. Здесь видно сразу и точно.
+    """
+    log("")
+    log("=" * 70)
+    log("Сигнатуры API")
+    log("=" * 70)
+    if not AAR.exists():
+        return
+    with zipfile.ZipFile(AAR) as aar:
+        with aar.open("classes.jar") as raw, open("classes-api.jar", "wb") as out:
+            shutil.copyfileobj(raw, out)
+
+    with zipfile.ZipFile("classes-api.jar") as jar:
+        names = [n for n in jar.namelist() if n.endswith(".class")]
+
+    interesting = [
+        n[:-len(".class")].replace("/", ".")
+        for n in names
+        if any(w in n for w in WANTED_CLASSES) and "$" not in n
+    ]
+    for cls in sorted(interesting):
+        log("")
+        log(f"--- {cls}")
+        code = subprocess.run(
+            ["javap", "-classpath", "classes-api.jar", cls],
+            capture_output=True,
+            text=True,
+        )
+        log(code.stdout.strip() or code.stderr.strip())
+
+
 def main() -> None:
     classes = probe_aar()
+    dump_api()
     assets = probe_assets()
 
     log("")
