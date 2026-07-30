@@ -44,6 +44,10 @@ OPUS_PAIRS = {
     "en-ru": "Helsinki-NLP/opus-mt-en-ru",
     "ja-ru": "Helsinki-NLP/opus-mt-ja-ru",
     "zh-en": "Helsinki-NLP/opus-mt-zh-en",
+    # Существование прямой zh-ru не подтверждено. Пробуем: если соберётся,
+    # приложение возьмёт её вместо перевода через английский. Если нет — job
+    # упадёт изолированно, остальные пары не пострадают.
+    "zh-ru": "Helsinki-NLP/opus-mt-zh-ru",
 }
 
 

@@ -48,19 +48,28 @@ class OpusMtTranslator private constructor(
          * откатывается на быстрый бэкенд, а не падает.
          */
         suspend fun create(lang: SourceLang, store: ModelStore): OpusMtTranslator {
-            val pairs = lang.opusMtPairs
-            require(pairs.isNotEmpty()) { "Для ${lang.title} перевод не нужен" }
+            val chains = lang.opusMtChains
+            require(chains.isNotEmpty()) { "Для ${lang.title} перевод не нужен" }
 
-            val keys = pairs.flatMap { pair ->
-                listOf(
-                    ModelKeys.mtEncoder(pair),
-                    ModelKeys.mtDecoder(pair),
-                    ModelKeys.mtSource(pair),
-                    ModelKeys.mtTarget(pair),
-                    ModelKeys.mtMeta(pair),
-                )
+            // Берём первую цепочку, для которой в манифесте есть все файлы.
+            // Так прямая zh→ru используется, когда она собрана, и происходит
+            // откат на пивот через английский, когда её нет.
+            var pairs: List<String>? = null
+            var entries: List<ModelStore.Entry> = emptyList()
+            var lastError: Throwable? = null
+            for (candidate in chains) {
+                try {
+                    entries = store.resolve(candidate.flatMap { keysFor(it) })
+                    pairs = candidate
+                    break
+                } catch (t: Throwable) {
+                    lastError = t
+                }
             }
-            val entries = store.resolve(keys)
+            if (pairs == null) {
+                throw lastError ?: IllegalStateException("Модели Opus-MT недоступны")
+            }
+
             store.ensure(entries)
             val byKey = entries.associateBy { it.key }
 
@@ -78,5 +87,13 @@ class OpusMtTranslator private constructor(
             }
             return OpusMtTranslator(stages)
         }
+
+        private fun keysFor(pair: String): List<String> = listOf(
+            ModelKeys.mtEncoder(pair),
+            ModelKeys.mtDecoder(pair),
+            ModelKeys.mtSource(pair),
+            ModelKeys.mtTarget(pair),
+            ModelKeys.mtMeta(pair),
+        )
     }
 }
