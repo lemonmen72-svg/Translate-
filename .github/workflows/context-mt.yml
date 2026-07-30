@@ -1,0 +1,27 @@
+name: Замер пользы контекста
+
+# Отдельно от compare-mt.yml: там качаются четыре модели и прогон идёт минуты,
+# а здесь нужна одна и ответ нужен быстро. Запускается правкой ctx.trigger,
+# потому что у токена нет прав на workflow_dispatch через API.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ctx.trigger"
+      - "tools/validate_context.py"
+
+jobs:
+  context:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Поставить transformers
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers sentencepiece sacremoses
+      - name: Помогает ли контекст предыдущей фразы
+        run: python3 tools/validate_context.py
