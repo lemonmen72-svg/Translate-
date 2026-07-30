@@ -9,6 +9,7 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import ru.translate.overlay.capture.AudioCapture
+import ru.translate.overlay.mt.TextSplitter
 
 /**
  * Потоковое распознавание: текст появляется по ходу речи, а не после её конца.
@@ -79,10 +80,16 @@ class StreamingAsr(
         ),
     )
 
-    private var stream: OnlineStream = recognizer.createStream()
+    private val stream: OnlineStream = recognizer.createStream()
 
-    /** Последняя отданная в перевод часть — чтобы не переводить одно дважды. */
-    private var consumedPrefix = ""
+    /**
+     * Сколько символов текущей гипотезы уже отдано в перевод.
+     *
+     * Именно счётчик символов, а не сохранённая строка-префикс: в промежуточных
+     * вариантах пробелы по краям обрезаются, и сравнение строк давало съезжающие
+     * смещения — часть текста уходила в перевод дважды.
+     */
+    private var consumedChars = 0
 
     /**
      * Скармливает кадр и возвращает, что делать дальше.
@@ -95,28 +102,32 @@ class StreamingAsr(
             recognizer.decode(stream)
         }
 
-        val text = recognizer.getResult(stream).text.trim()
+        val text = recognizer.getResult(stream).text
+
+        // Гипотеза может укоротиться: распознавание уточняет её задним числом.
+        // Тогда прежнее смещение бессмысленно.
+        if (consumedChars > text.length) consumedChars = 0
 
         if (recognizer.isEndpoint(stream)) {
             recognizer.reset(stream)
-            val tail = remainder(text)
-            consumedPrefix = ""
-            return if (tail.isBlank()) Update.Nothing else Update.Final(tail)
+            val tail = text.substring(consumedChars).trim()
+            consumedChars = 0
+            return if (tail.isEmpty()) Update.Nothing else Update.Final(tail)
         }
 
-        val pending = remainder(text)
-        if (pending.isBlank()) return Update.Nothing
+        val rest = text.substring(consumedChars)
+        if (rest.isBlank()) return Update.Nothing
 
-        // Внутри фразы отдаём в перевод законченные предложения, не дожидаясь
-        // конца всей реплики: так субтитры идут ровным потоком.
-        val cut = TextSplitter.lastSentenceBoundary(pending)
+        // Внутри реплики отдаём в перевод законченные предложения, не дожидаясь
+        // её конца: так субтитры идут ровным потоком, а не абзацем.
+        val cut = TextSplitter.lastSentenceBoundary(rest)
         if (cut > 0) {
-            val ready = pending.substring(0, cut).trim()
-            consumedPrefix = text.substring(0, consumedPrefix.length + cut)
-            return Update.Final(ready)
+            val ready = rest.substring(0, cut).trim()
+            consumedChars += cut
+            if (ready.isNotEmpty()) return Update.Final(ready)
         }
 
-        return Update.Partial(pending)
+        return Update.Partial(rest.trim())
     }
 
     /** Досасывает хвост при остановке сессии. */
@@ -125,20 +136,15 @@ class StreamingAsr(
         while (recognizer.isReady(stream)) {
             recognizer.decode(stream)
         }
-        val tail = remainder(recognizer.getResult(stream).text.trim())
-        consumedPrefix = ""
-        return tail
-    }
-
-    private fun remainder(full: String): String =
-        if (full.startsWith(consumedPrefix)) {
-            full.substring(consumedPrefix.length).trim()
+        val text = recognizer.getResult(stream).text
+        val tail = if (consumedChars <= text.length) {
+            text.substring(consumedChars)
         } else {
-            // Гипотеза переписалась целиком — так бывает, транскрипция уточняется
-            // задним числом. Тогда честнее начать с чистого листа.
-            consumedPrefix = ""
-            full
+            text
         }
+        consumedChars = 0
+        return tail.trim()
+    }
 
     fun release() {
         runCatching { stream.release() }
