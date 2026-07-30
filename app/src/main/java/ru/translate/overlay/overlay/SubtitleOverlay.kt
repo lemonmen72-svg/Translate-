@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -47,6 +50,20 @@ class SubtitleOverlay(
 
     /** Метка говорящего у текущей фразы, чтобы не перекрашивать зря. */
     private var lastSpeaker: String? = null
+
+    /** Показанные ранее фразы: держим последние [HISTORY_LINES]. */
+    private val history = ArrayDeque<String>()
+
+    /** Фразы, ждущие показа. Очередь нужна, чтобы они не мелькали по секунде. */
+    private val queue = ArrayDeque<Pending>()
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val pumpRunnable = Runnable {
+        scheduled = false
+        pump()
+    }
+    private var scheduled = false
+    private var lastShownAtMs = 0L
 
     /**
      * Ширина по содержимому, а не MATCH_PARENT: при MATCH_PARENT горизонтальное
@@ -99,7 +116,8 @@ class SubtitleOverlay(
             setTextColor(Color.parseColor("#8A93A5"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 3f)
             maxWidth = maxTextWidth
-            maxLines = 2
+            // Две прошлые фразы, каждая может занять две строки.
+            maxLines = 4
             visibility = View.GONE
             text = ""
         }
@@ -227,27 +245,72 @@ class SubtitleOverlay(
     }
 
     /**
-     * Показывает готовую фразу.
+     * Ставит готовую фразу в очередь показа.
      *
      * Метка говорящего выводится перед текстом и красит его: в диалоге две
      * реплики подряд иначе читаются как одна мысль одного человека. Цвет берётся
      * по номеру голоса, поэтому за репликой можно следить глазами, не вчитываясь
      * в метку.
+     *
+     * Именно очередь, а не немедленная подстановка — это исправление того, на что
+     * жаловался пользователь: накопленная реплика резалась на предложения, они
+     * переводились подряд и сменяли друг друга за секунду, «кусок, второй, третий
+     * и сразу конец». Прочитать это было нельзя. Теперь каждая фраза висит хотя бы
+     * [MIN_VISIBLE_MS], а если фразы копятся — показ ускоряется, но ни одна не
+     * выбрасывается.
      */
     fun setPhrase(translated: String, source: String, speaker: String? = null) {
+        queue.addLast(Pending(translated, source, speaker))
+        pump()
+    }
+
+    private class Pending(val translated: String, val source: String, val speaker: String?)
+
+    /**
+     * Показывает следующую фразу, соблюдая минимальное время на экране.
+     *
+     * При накоплении очереди время сокращается пропорционально: лучше показать
+     * быстрее, чем потерять фразу или уехать в отставание на полминуты.
+     */
+    private fun pump() {
+        if (scheduled) return
+        if (queue.isEmpty()) return
+
+        val minVisible = (MIN_VISIBLE_MS / (1 + queue.size))
+            .coerceAtLeast(MIN_VISIBLE_FLOOR_MS)
+        val waited = SystemClock.uptimeMillis() - lastShownAtMs
+        if (waited < minVisible) {
+            scheduled = true
+            handler.postDelayed(pumpRunnable, minVisible - waited)
+            return
+        }
+
+        val next = queue.removeFirst()
+        lastShownAtMs = SystemClock.uptimeMillis()
+        render(next)
+        if (queue.isNotEmpty()) pump()
+    }
+
+    private fun render(phrase: Pending) {
         val previous = lastTranslation
         if (!previous.isNullOrBlank()) {
-            previousView?.text = previous
+            history.addLast(previous)
+            while (history.size > HISTORY_LINES) history.removeFirst()
+            previousView?.text = history.joinToString("\n")
             previousView?.visibility = if (collapsed) View.GONE else View.VISIBLE
         }
-        lastTranslation = translated
-        lastSpeaker = speaker
+        lastTranslation = phrase.translated
+        lastSpeaker = phrase.speaker
 
         translationView?.apply {
-            text = if (speaker == null) translated else "$speaker: $translated"
-            setTextColor(colorFor(speaker))
+            text = if (phrase.speaker == null) {
+                phrase.translated
+            } else {
+                "${phrase.speaker}: ${phrase.translated}"
+            }
+            setTextColor(colorFor(phrase.speaker))
         }
-        sourceView?.text = source
+        sourceView?.text = phrase.source
     }
 
     /**
@@ -296,6 +359,10 @@ class SubtitleOverlay(
     }
 
     fun hide() {
+        handler.removeCallbacks(pumpRunnable)
+        scheduled = false
+        queue.clear()
+        history.clear()
         val view = root ?: return
         runCatching { windowManager.removeView(view) }
         root = null
@@ -325,6 +392,15 @@ class SubtitleOverlay(
     private companion object {
         const val TAP_SLOP = 12
         const val MIN_VISIBLE_DP = 48
+
+        /** Сколько фраза висит на экране, если очередь пуста. */
+        const val MIN_VISIBLE_MS = 2200L
+
+        /** Ниже этого не сокращаем даже при большой очереди: иначе не прочесть. */
+        const val MIN_VISIBLE_FLOOR_MS = 600L
+
+        /** Сколько прошлых фраз держать над текущей. */
+        const val HISTORY_LINES = 2
 
         /** Цвета голосов по порядку появления. */
         val SPEAKER_COLORS = intArrayOf(

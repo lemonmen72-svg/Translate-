@@ -43,8 +43,15 @@ class StreamingAsr(
         /** Гипотеза ещё уточняется: можно показать как предварительный текст. */
         data class Partial(val text: String) : Update
 
-        /** Фраза закончена, текст можно переводить. */
-        data class Final(val text: String) : Update
+        /**
+         * Текст можно переводить.
+         *
+         * [forced] — кусок отрезан не по знаку препинания, а по длине или времени,
+         * то есть это заведомо середина фразы. Такой кусок нельзя придерживать в
+         * ожидании продолжения: он отрезан именно ради того, чтобы показать перевод
+         * прямо сейчас.
+         */
+        data class Final(val text: String, val forced: Boolean = false) : Update
 
         data object Nothing : Update
     }
@@ -91,6 +98,9 @@ class StreamingAsr(
      */
     private var consumedChars = 0
 
+    /** Когда последний раз что-то ушло в перевод. Нужен для нарезки по времени. */
+    private var lastEmitAtMs = System.currentTimeMillis()
+
     /**
      * Скармливает кадр и возвращает, что делать дальше.
      *
@@ -112,6 +122,7 @@ class StreamingAsr(
             recognizer.reset(stream)
             val tail = text.substring(consumedChars).trim()
             consumedChars = 0
+            lastEmitAtMs = System.currentTimeMillis()
             return if (tail.isEmpty()) Update.Nothing else Update.Final(tail)
         }
 
@@ -124,10 +135,53 @@ class StreamingAsr(
         if (cut > 0) {
             val ready = rest.substring(0, cut).trim()
             consumedChars += cut
-            if (ready.isNotEmpty()) return Update.Final(ready)
+            if (ready.isNotEmpty()) {
+                lastEmitAtMs = System.currentTimeMillis()
+                return Update.Final(ready)
+            }
+        }
+
+        // Принудительная нарезка — исправление настоящего дефекта.
+        //
+        // Раньше кусок отдавался в перевод ТОЛЬКО по знаку препинания. Если модель
+        // их не ставит — а этого никто не гарантирует, — на сплошном разговоре не
+        // отдавалось ничего до самой паузы. Пользователь видел ровно это: перевод
+        // появлялся, только когда речь останавливалась, и то сразу тремя кусками
+        // подряд, потому что накопленная реплика разом резалась на предложения.
+        //
+        // Теперь кусок уходит и без знаков: когда накопилось много текста или
+        // прошло много времени. Режем по последнему пробелу, чтобы не разрывать
+        // слово, и оставляем текущее недоговорённое слово следующему разу.
+        val forcedCut = forcedBoundary(rest)
+        if (forcedCut > 0) {
+            val ready = rest.substring(0, forcedCut).trim()
+            consumedChars += forcedCut
+            if (ready.isNotEmpty()) {
+                lastEmitAtMs = System.currentTimeMillis()
+                return Update.Final(ready, forced = true)
+            }
         }
 
         return Update.Partial(rest.trim())
+    }
+
+    /**
+     * Где резать кусок, если знаков препинания нет. 0 — резать рано.
+     *
+     * Два условия, и оба нужны. По длине — чтобы на быстрой речи текст шёл
+     * потоком. По времени — чтобы на медленной речи не приходилось ждать, пока
+     * наберётся длина.
+     */
+    private fun forcedBoundary(rest: String): Int {
+        val longEnough = rest.length >= FORCE_CHARS
+        val waitedLong = System.currentTimeMillis() - lastEmitAtMs >= FORCE_MS &&
+            rest.length >= FORCE_MIN_CHARS
+        if (!longEnough && !waitedLong) return 0
+
+        // Последнее слово ещё договаривается и может быть уточнено задним числом,
+        // поэтому отдаём всё до последнего пробела, а его оставляем.
+        val lastSpace = rest.trimEnd().lastIndexOf(' ')
+        return if (lastSpace > 0) lastSpace else 0
     }
 
     /** Досасывает хвост при остановке сессии. */
@@ -143,11 +197,23 @@ class StreamingAsr(
             text
         }
         consumedChars = 0
+        lastEmitAtMs = System.currentTimeMillis()
         return tail.trim()
     }
 
     fun release() {
         runCatching { stream.release() }
         runCatching { recognizer.release() }
+    }
+
+    private companion object {
+        /** Столько накопленного текста уже стоит показать, не дожидаясь точки. */
+        const val FORCE_CHARS = 70
+
+        /** Столько ждём, прежде чем показать даже короткий кусок. */
+        const val FORCE_MS = 2500L
+
+        /** Короче этого не режем даже по таймауту: получится огрызок. */
+        const val FORCE_MIN_CHARS = 25
     }
 }

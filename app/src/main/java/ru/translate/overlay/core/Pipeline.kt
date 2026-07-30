@@ -85,6 +85,13 @@ class Pipeline(
         val speechSeconds: Float = 0f,
         /** Готовая метка: заполняется только когда голос уже определён. */
         val speaker: String? = null,
+        /**
+         * Кусок отрезан по длине или времени, а не по знаку препинания.
+         *
+         * Такой кусок нельзя придерживать в ожидании продолжения: он отрезан ровно
+         * ради того, чтобы перевод появился прямо сейчас, посреди речи.
+         */
+        val forced: Boolean = false,
     )
 
     /**
@@ -226,6 +233,7 @@ class Pipeline(
                                 segmentDurationMs = 0,
                                 audio = utteranceAudio,
                                 speechSeconds = utteranceSpeech,
+                                forced = update.forced,
                             )
                         )
                     }
@@ -377,7 +385,7 @@ class Pipeline(
                 flushHeld(force = true)
             }
 
-            val merged = mergeWithHeld(sourceText, speakerLabel)
+            val merged = mergeWithHeld(sourceText, speakerLabel, allowHold = !utterance.forced)
             if (merged == null) {
                 SessionState.setStage(Stage.Listening)
                 return
@@ -450,7 +458,11 @@ class Pipeline(
     /** Результат склейки: текст и метка того, кто начал фразу. */
     private class Merged(val text: String, val speaker: String?)
 
-    private fun mergeWithHeld(text: String, speakerLabel: String?): Merged? {
+    private fun mergeWithHeld(
+        text: String,
+        speakerLabel: String?,
+        allowHold: Boolean,
+    ): Merged? {
         val held = heldFragment.getAndSet(null)
         val combined = if (held == null) text.trim() else "${held.text} ${text.trim()}".trim()
         val startedAtMs = held?.atMs ?: System.currentTimeMillis()
@@ -461,7 +473,11 @@ class Pipeline(
 
         val last = combined.lastOrNull()
         val finished = last != null && last in SENTENCE_END
-        if (finished || combined.length >= FRAGMENT_MAX_LEN || waitedMs >= HOLD_MAX_MS) {
+        if (!allowHold ||
+            finished ||
+            combined.length >= FRAGMENT_MAX_LEN ||
+            waitedMs >= HOLD_MAX_MS
+        ) {
             return Merged(combined, label)
         }
         heldFragment.set(Held(combined, startedAtMs, label))
