@@ -175,11 +175,11 @@ def build_opus(work: Path, only: str | None) -> None:
             )
             emit(quantized, f"opus-mt-{pair}-{suffix}.int8.onnx")
 
-        dump_tokenizer(tokenizer, pair)
+        dump_tokenizer(tokenizer, repo, pair)
         shutil.rmtree(export_dir, ignore_errors=True)
 
 
-def dump_tokenizer(tokenizer: object, pair: str) -> None:
+def dump_tokenizer(tokenizer: object, repo: str, pair: str) -> None:
     """Выгружает куски SentencePiece, словарь и метаданные в JSON.
 
     Файл .spm — protobuf; чтобы не тащить protobuf-рантайм на устройство, здесь
@@ -187,15 +187,13 @@ def dump_tokenizer(tokenizer: object, pair: str) -> None:
     в приложении.
     """
     import sentencepiece as spm
+    from huggingface_hub import hf_hub_download
 
-    source_spm = Path(tokenizer.spm_source_path()) \
-        if hasattr(tokenizer, "spm_source_path") else None
-    if source_spm is None:
-        # У MarianTokenizer файл лежит в vocab_files_names.
-        source_spm = Path(tokenizer.vocab_file).parent / "source.spm"
-        if not source_spm.exists():
-            candidates = list(Path(tokenizer.vocab_file).parent.glob("*.spm"))
-            source_spm = candidates[0]
+    # Путь к source.spm берём прямо из репозитория модели: у MarianTokenizer нет
+    # стабильного атрибута с этим файлом, имена менялись между версиями
+    # transformers.
+    source_spm = Path(hf_hub_download(repo_id=repo, filename="source.spm"))
+    log(f"  source.spm: {source_spm}")
 
     sp = spm.SentencePieceProcessor()
     sp.load(str(source_spm))

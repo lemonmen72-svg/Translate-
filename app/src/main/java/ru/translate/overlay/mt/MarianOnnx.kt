@@ -43,19 +43,25 @@ class MarianOnnx private constructor(
         val sourceLen = sourceIds.size.toLong()
         val attention = LongArray(sourceIds.size) { 1L }
 
-        tensor(sourceIds, 1, sourceLen).use { inputIds ->
-            tensor(attention, 1, sourceLen).use { attentionMask ->
-                val encoderOut = encoder.run(
-                    mapOf(
-                        "input_ids" to inputIds,
-                        "attention_mask" to attentionMask,
-                    )
+        // Явные try/finally вместо вложенных use: маска внимания и скрытые
+        // состояния энкодера должны жить всё время декодирования, а вложенные
+        // use закрыли бы их раньше.
+        val inputIds = tensor(sourceIds, 1, sourceLen)
+        val attentionMask = tensor(attention, 1, sourceLen)
+        var encoderResult: OrtSession.Result? = null
+        try {
+            encoderResult = encoder.run(
+                mapOf(
+                    "input_ids" to inputIds,
+                    "attention_mask" to attentionMask,
                 )
-                encoderOut.use { out ->
-                    val hidden = out.get(0) as OnnxTensor
-                    return decodeGreedy(hidden, attentionMask)
-                }
-            }
+            )
+            val hidden = encoderResult.get(0) as OnnxTensor
+            return decodeGreedy(hidden, attentionMask)
+        } finally {
+            runCatching { encoderResult?.close() }
+            runCatching { attentionMask.close() }
+            runCatching { inputIds.close() }
         }
     }
 
@@ -69,18 +75,17 @@ class MarianOnnx private constructor(
         val pieces = ArrayList<String>(meta.maxTargetTokens)
         while (generated.size <= meta.maxTargetTokens) {
             val ids = LongArray(generated.size) { generated[it].toLong() }
-            val next = tensor(ids, 1, ids.size.toLong()).use { decoderInput ->
-                val result = decoder.run(
+            val decoderInput = tensor(ids, 1, ids.size.toLong())
+            val next = try {
+                decoder.run(
                     mapOf(
                         "input_ids" to decoderInput,
                         "encoder_attention_mask" to encoderAttention,
                         "encoder_hidden_states" to encoderHidden,
                     )
-                )
-                result.use { out ->
-                    val logits = out.get(0) as OnnxTensor
-                    argmaxLastStep(logits, ids.size)
-                }
+                ).use { out -> argmaxLastStep(out.get(0) as OnnxTensor, ids.size) }
+            } finally {
+                runCatching { decoderInput.close() }
             }
             if (next == meta.eosId || next == meta.padId) break
             generated.add(next)

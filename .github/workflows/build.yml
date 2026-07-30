@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   # Разведка: печатает реальные имена ассетов релизов sherpa-onnx.
   # Локально это не проверить — dl.google.com и huggingface.co закрыты
@@ -51,3 +54,21 @@ jobs:
           name: apk-debug
           path: out/*.apk
           if-no-files-found: error
+
+      # Дублируем APK в релиз: артефакты Actions раздаются с хоста
+      # *.blob.core.windows.net, а он закрыт политикой сети среды разработки —
+      # оттуда файл не скачать. Ассеты релизов лежат на доступном хосте.
+      - name: Опубликовать APK релизом
+        if: github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=apk-latest
+          notes="Debug-сборка из коммита ${GITHUB_SHA::8}."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" out/*.apk --clobber
+            gh release edit "$tag" --notes "$notes"
+          else
+            gh release create "$tag" out/*.apk \
+              --title "Последняя сборка APK" --notes "$notes"
+          fi
