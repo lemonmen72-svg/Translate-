@@ -1,0 +1,27 @@
+name: Сравнение моделей перевода
+
+# Одноразовая проверка качества: выбирать модель надо по результату на живых
+# фразах, а не по репутации. Запускается правкой файла mt.trigger, потому что у
+# токена нет прав на workflow_dispatch через API.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "mt.trigger"
+      - "tools/compare_mt.py"
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Поставить transformers
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers sentencepiece sacremoses
+      - name: Перевести тестовые фразы
+        run: python3 tools/compare_mt.py

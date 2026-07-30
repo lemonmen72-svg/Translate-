@@ -1,6 +1,7 @@
 package ru.translate.overlay.tts
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.AudioManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -22,12 +23,21 @@ import kotlin.coroutines.resume
  * Цена: голос не такой естественный, как у Silero, и это компонент системы, а
  * не наш собственный. Замена на Piper или Silero — понятный путь улучшения.
  *
- * Главная проблема озвучки, которой в ТЗ не было: наш собственный русский голос
- * играется как обычное media-аудио и попадает в тот же захват через
- * AudioPlaybackCaptureConfiguration — пайплайн начинает распознавать сам себя.
- * Понижение громкости оригинала это не лечит, потому что источником становимся
- * мы. Поэтому [speaking] выставляется на всё время проигрывания, а пайплайн по
- * этому флагу не подаёт кадры в VAD.
+ * Главная проблема озвучки: наш собственный русский голос играется как аудио и
+ * попадает в тот же захват через AudioPlaybackCaptureConfiguration — пайплайн
+ * начинает распознавать сам себя.
+ *
+ * Сначала это лечилось грубо: пока идёт озвучка, кадры в VAD не подавались. На
+ * практике вышло хуже болезни — озвучка длинной фразы занимает десятки секунд, и
+ * всё это время приложение глухое, из-за чего перевод выглядит как «начинается
+ * только когда остановишь видео».
+ *
+ * Правильное решение: проигрывать озвучку с usage, которого нет в списке
+ * захватываемых. Захват ловит USAGE_MEDIA, USAGE_GAME и USAGE_UNKNOWN, а
+ * USAGE_ASSISTANT не ловит — значит свой голос в пайплайн не попадёт, и слушать
+ * можно не переставая. Флаг [speaking] остаётся для индикатора и для устройств,
+ * где прошивка всё равно захватывает наш поток: на них можно включить
+ * «Не слушать во время озвучки».
  */
 class RussianTts(context: Context) {
 
@@ -59,6 +69,15 @@ class RussianTts(context: Context) {
             if (cont.isActive) cont.resume(ready)
         }
         engine = tts
+        // Ключевая настройка: наш голос не должен попадать в собственный захват.
+        runCatching {
+            tts.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+        }
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
                 speaking.set(true)
@@ -77,17 +96,20 @@ class RussianTts(context: Context) {
     }
 
     /**
-     * Проигрывает текст. Возвращает управление сразу — ждать окончания должен
-     * пайплайн по флагу [speaking].
+     * Проигрывает текст. Возвращает управление сразу.
+     *
+     * [continuePhrase] = false начинает новую фразу и сбрасывает очередь:
+     * устаревший перевод озвучивать бессмысленно, субтитры к видео живут
+     * считаные секунды. true дочитывает следующее предложение той же фразы.
      */
-    fun speak(text: String) {
+    fun speak(text: String, continuePhrase: Boolean = false) {
         val tts = engine ?: return
         if (!ready || text.isBlank()) return
         speaking.set(true)
         counter += 1
-        // QUEUE_FLUSH, а не ADD: устаревший перевод озвучивать бессмысленно,
-        // субтитры к видео живут считаные секунды.
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u$counter")
+        val mode =
+            if (continuePhrase) TextToSpeech.QUEUE_ADD else TextToSpeech.QUEUE_FLUSH
+        tts.speak(text, mode, null, "u$counter")
     }
 
     /** Приглушает исходную дорожку, чтобы два голоса не накладывались. */
