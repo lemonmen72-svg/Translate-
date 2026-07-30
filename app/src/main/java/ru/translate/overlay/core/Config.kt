@@ -54,8 +54,11 @@ enum class SourceLang(
 
 /** Модели потокового распознавания. */
 enum class StreamingModel(val id: String, val approxMb: Int, val hasPunctuation: Boolean) {
-    ZH_EN_PUNCT("stream-zh-en-punct", 134, true),
-    MULTILINGUAL("stream-multi", 259, false),
+    // Размеры фактические по манифесту релиза, а не по размеру архива:
+    // распакованные файлы заметно крупнее.
+    ZH_EN_PUNCT("stream-zh-en-punct", 169, true),
+    // Многоязычная модель раздаётся без int8-варианта, отсюда и объём.
+    MULTILINGUAL("stream-multi", 339, false),
 }
 
 /** Как распознавать речь. */
