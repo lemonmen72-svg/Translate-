@@ -94,6 +94,15 @@ object SessionState {
     /** Сколько сегментов отброшено за сессию: галлюцинации плюс back-pressure. */
     val skipped: StateFlow<Int> = _skipped.asStateFlow()
 
+    private val _overlaySettingsVersion = MutableStateFlow(0)
+
+    /**
+     * Счётчик правок настроек оверлея. UI его увеличивает, сервис слушает и
+     * применяет изменения к живому окну — иначе ползунки шрифта и прозрачности
+     * действовали бы только со следующей сессии.
+     */
+    val overlaySettingsVersion: StateFlow<Int> = _overlaySettingsVersion.asStateFlow()
+
     private val _dropped = MutableStateFlow(0)
 
     /** Сколько сегментов сброшено именно из-за отставания пайплайна. */
@@ -106,6 +115,10 @@ object SessionState {
     fun publish(phrase: Phrase) {
         _current.value = phrase
         _history.update { (it + phrase).takeLast(MAX_HISTORY) }
+    }
+
+    fun notifyOverlaySettingsChanged() {
+        _overlaySettingsVersion.update { it + 1 }
     }
 
     fun noteSkipped() {

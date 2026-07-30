@@ -173,6 +173,11 @@ class TranslateService : LifecycleService() {
             }
         }
         lifecycleScope.launch {
+            SessionState.overlaySettingsVersion.collect {
+                overlay?.applySettings()
+            }
+        }
+        lifecycleScope.launch {
             thermal.level.collect { level ->
                 if (level != ThermalGovernor.Level.NORMAL && settings.thermalThrottle) {
                     SessionState.setStage(

@@ -235,16 +235,26 @@ private fun MainScreen(modifier: Modifier = Modifier) {
             Slider(
                 value = fontSp,
                 valueRange = 12f..30f,
-                onValueChange = { fontSp = it; settings.overlayFontSp = it },
+                onValueChange = {
+                    fontSp = it
+                    settings.overlayFontSp = it
+                    SessionState.notifyOverlaySettingsChanged()
+                },
             )
             Text("Плотность фона: ${(opacity * 100).toInt()}%", fontSize = 12.sp)
             Slider(
                 value = opacity,
                 valueRange = 0f..1f,
-                onValueChange = { opacity = it; settings.overlayOpacity = it },
+                onValueChange = {
+                    opacity = it
+                    settings.overlayOpacity = it
+                    SessionState.notifyOverlaySettingsChanged()
+                },
             )
             CheckRow("Показывать исходный текст", showSource) {
-                showSource = it; settings.showSourceText = it
+                showSource = it
+                settings.showSourceText = it
+                SessionState.notifyOverlaySettingsChanged()
             }
         }
 
