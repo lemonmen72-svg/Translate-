@@ -7,8 +7,8 @@ plugins {
 // Версия задаётся здесь одним местом: отсюда её берут и манифест, и интерфейс,
 // и имя файла APK. Иначе они разъезжаются, и по присланному файлу становится
 // непонятно, что именно в нём собрано.
-val appVersionName = "0.2.0"
-val appVersionCode = 2
+val appVersionName = "0.2.1"
+val appVersionCode = 3
 
 // Короткий хеш коммита: в CI приходит из окружения, локально его нет.
 // Нужен, чтобы по установленному приложению можно было точно сказать, из какого
@@ -58,6 +58,14 @@ android {
             storePassword = "overlaytranslator"
             keyAlias = "overlay"
             keyPassword = "overlaytranslator"
+
+            // Все схемы подписи разом. По умолчанию AGP при minSdk 29 ставил
+            // только v2 — проверка apksigner это подтвердила. Формально для
+            // Android 7+ этого достаточно, но установщики отдельных прошивок
+            // ведут себя капризно, а включить v1 и v3 ничего не стоит.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
