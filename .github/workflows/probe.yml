@@ -1,0 +1,28 @@
+name: Разведка возможностей
+
+# Проверки, которые нельзя сделать из среды разработки: там не видно ни релизов
+# чужих репозиториев, ни содержимого AAR. Запускается правкой probe.trigger,
+# потому что у токена нет прав на workflow_dispatch через API.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "probe.trigger"
+      - "tools/probe_speakers.py"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Скачать AAR sherpa-onnx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/fetch_sherpa.py
+      - name: Что доступно для различения голосов
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/probe_speakers.py
