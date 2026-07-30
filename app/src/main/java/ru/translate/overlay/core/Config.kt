@@ -26,8 +26,12 @@ enum class SourceLang(
      * модель, пунктуации в ней нет, но других потоковых вариантов под эти языки
      * в наборе нет.
      */
-    val streamingModel: StreamingModel get() = when (this) {
-        EN, ZH -> StreamingModel.ZH_EN_PUNCT
+    fun streamingModel(chunk: ChunkSize): StreamingModel = when (this) {
+        EN, ZH -> when (chunk) {
+            ChunkSize.FAST -> StreamingModel.ZH_EN_PUNCT_160
+            ChunkSize.ACCURATE -> StreamingModel.ZH_EN_PUNCT_960
+        }
+        // Для японского и русского выбора нет: потоковая модель одна.
         JA, RU -> StreamingModel.MULTILINGUAL
     }
 
@@ -52,11 +56,34 @@ enum class SourceLang(
     }
 }
 
+/**
+ * Размер чанка потокового распознавания.
+ *
+ * Это второй рычаг качества после модели перевода, и я его сначала упустил.
+ * Модель с чанком 160 мс реагирует почти мгновенно, но у неё мало правого
+ * контекста, и она заметно чаще ошибается — а ошибку распознавания перевод уже
+ * не исправит. Вариант с 960 мс точнее ценой примерно 0.8 секунды задержки.
+ *
+ * Раз озвучка всё равно отстаёт от видео, этот обмен выгоден: точность растёт,
+ * а лишняя секунда на фоне отставания озвучки незаметна.
+ */
+enum class ChunkSize(val title: String, val subtitle: String) {
+    ACCURATE(
+        "Точнее",
+        "Чанк 960 мс: больше контекста, меньше ошибок, задержка примерно на 0.8 с больше",
+    ),
+    FAST(
+        "Быстрее",
+        "Чанк 160 мс: текст появляется почти сразу, но распознавание грубее",
+    ),
+}
+
 /** Модели потокового распознавания. */
 enum class StreamingModel(val id: String, val approxMb: Int, val hasPunctuation: Boolean) {
     // Размеры фактические по манифесту релиза, а не по размеру архива:
     // распакованные файлы заметно крупнее.
-    ZH_EN_PUNCT("stream-zh-en-punct", 169, true),
+    ZH_EN_PUNCT_160("stream-zh-en-punct", 169, true),
+    ZH_EN_PUNCT_960("stream-zh-en-punct-960", 169, true),
     // Многоязычная модель раздаётся без int8-варианта, отсюда и объём.
     MULTILINGUAL("stream-multi", 339, false),
 }

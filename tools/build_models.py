@@ -44,6 +44,14 @@ STREAMING = {
         "sherpa-onnx-x-asr-160ms-streaming-zipformer-transducer-zh-en-punct-int8"
         "-2026-06-05",
     ),
+    # Тот же набор, но чанк 960 мс вместо 160. Больше правого контекста — заметно
+    # точнее распознавание, ценой примерно 0.8 с задержки. Для озвучки, которая и
+    # так отстаёт, это выгодный обмен.
+    "stream-zh-en-punct-960": (
+        "asr-models",
+        "sherpa-onnx-x-asr-960ms-streaming-zipformer-transducer-zh-en-punct-int8"
+        "-2026-06-05",
+    ),
     # Японского и русского в потоковом виде с пунктуацией нет, поэтому берём
     # многоязычную модель.
     "stream-multi": (

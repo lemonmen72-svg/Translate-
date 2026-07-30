@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [stream-zh-en-punct, stream-multi]
+        model: [stream-zh-en-punct, stream-zh-en-punct-960, stream-multi]
     steps:
       - uses: actions/checkout@v4
       - name: Собрать ${{ matrix.model }}

@@ -332,7 +332,8 @@ class Pipeline(
         }
 
         if (profile.asrMode == AsrMode.STREAMING) {
-            val model = lang.streamingModel.id
+            val streamModel = lang.streamingModel(settings.chunkSize)
+            val model = streamModel.id
             val entries = store.resolve(
                 listOf(
                     ModelKeys.streamEncoder(model),
@@ -390,7 +391,8 @@ class Pipeline(
         // потоковом режиме для en и zh знаки уже расставлены моделью.
         val punctuationNeeded = settings.punctuation &&
             lang.supportsPunctuationModel &&
-            !(profile.asrMode == AsrMode.STREAMING && lang.streamingModel.hasPunctuation)
+            !(profile.asrMode == AsrMode.STREAMING &&
+                lang.streamingModel(settings.chunkSize).hasPunctuation)
         if (punctuationNeeded) {
             punctuator = runCatching {
                 val entry = store.resolve(listOf(ModelKeys.PUNCT_MODEL))

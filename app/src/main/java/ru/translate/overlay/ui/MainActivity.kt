@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.translate.overlay.BuildConfig
 import ru.translate.overlay.core.AsrMode
+import ru.translate.overlay.core.ChunkSize
 import ru.translate.overlay.core.DenoiseMode
 import ru.translate.overlay.core.LoadProgress
 import ru.translate.overlay.core.MtBackend
@@ -81,6 +82,7 @@ private fun MainScreen(modifier: Modifier = Modifier) {
     // Настройки читаются синхронно, поэтому держим их копию в состоянии Compose.
     var sourceLang by remember { mutableStateOf(settings.sourceLang) }
     var profile by remember { mutableStateOf(settings.profile) }
+    var chunkSize by remember { mutableStateOf(settings.chunkSize) }
     var mtBackend by remember { mutableStateOf(settings.mtBackend) }
     var denoise by remember { mutableStateOf(settings.denoise) }
     var punctuation by remember { mutableStateOf(settings.punctuation) }
@@ -231,8 +233,8 @@ private fun MainScreen(modifier: Modifier = Modifier) {
                 when (profile.asrMode) {
                     AsrMode.STREAMING ->
                         "Потоковая модель, около " +
-                            "${sourceLang.streamingModel.approxMb} МБ" +
-                            if (sourceLang.streamingModel.hasPunctuation) {
+                            "${sourceLang.streamingModel(chunkSize).approxMb} МБ" +
+                            if (sourceLang.streamingModel(chunkSize).hasPunctuation) {
                                 ", со знаками препинания"
                             } else {
                                 ", без знаков препинания"
@@ -244,6 +246,25 @@ private fun MainScreen(modifier: Modifier = Modifier) {
                 },
                 fontSize = 12.sp,
             )
+        }
+
+        if (profile.asrMode == AsrMode.STREAMING) {
+            item {
+                SectionTitle("Задержка против точности распознавания")
+                ChipRow(
+                    options = ChunkSize.entries,
+                    selected = chunkSize,
+                    label = { it.title },
+                    onSelect = { chunkSize = it; settings.chunkSize = it },
+                )
+                Text(chunkSize.subtitle, fontSize = 12.sp)
+                Text(
+                    "Ошибку распознавания перевод уже не исправит, поэтому " +
+                        "точность важнее лишней секунды — особенно когда озвучка " +
+                        "и так отстаёт.",
+                    fontSize = 11.sp,
+                )
+            }
         }
 
         if (sourceLang != SourceLang.RU) {

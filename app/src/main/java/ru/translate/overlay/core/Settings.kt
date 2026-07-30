@@ -22,6 +22,16 @@ class Settings(context: Context) {
         get() = enumOr(KEY_PROFILE, Profile.SYNC)
         set(value) = prefs.edit().putString(KEY_PROFILE, value.name).apply()
 
+    /**
+     * Размер чанка потокового распознавания.
+     *
+     * По умолчанию точный вариант: ошибка распознавания портит перевод сильнее,
+     * чем лишние 0.8 секунды задержки, особенно когда озвучка и так отстаёт.
+     */
+    var chunkSize: ChunkSize
+        get() = enumOr(KEY_CHUNK, ChunkSize.ACCURATE)
+        set(value) = prefs.edit().putString(KEY_CHUNK, value.name).apply()
+
     var mtBackend: MtBackend
         get() = enumOr(KEY_MT, MtBackend.OPUS_MT)
         set(value) = prefs.edit().putString(KEY_MT, value.name).apply()
@@ -149,6 +159,7 @@ class Settings(context: Context) {
         const val KEY_MUTE_SPEAKING = "mute_while_speaking"
         const val KEY_SPEECH_SPEED = "speech_speed"
         const val KEY_SPEECH_QUEUE = "speech_queue_depth"
+        const val KEY_CHUNK = "chunk_size"
         const val KEY_OPACITY = "overlay_opacity"
         const val KEY_FONT = "overlay_font_sp"
         const val KEY_SHOW_SOURCE = "show_source_text"
