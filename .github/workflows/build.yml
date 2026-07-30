@@ -1,0 +1,91 @@
+name: Сборка APK
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  # Разведка: печатает, какие ассеты реально лежат в релизах sherpa-onnx.
+  # Локально это проверить нельзя — dl.google.com и huggingface.co закрыты
+  # политикой сети среды разработки.
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ассеты релизов sherpa-onnx (AAR)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/k2-fsa/sherpa-onnx/releases?per_page=20" \
+          | python3 -c '
+import json, sys
+rels = json.load(sys.stdin)
+for r in rels:
+    aars = [a for a in r.get("assets", []) if a["name"].endswith(".aar")]
+    if not aars:
+        continue
+    print("TAG:", r["tag_name"])
+    for a in aars:
+        print("   ", a["name"], round(a["size"] / 1e6, 1), "MB")
+'
+
+      - name: Ассеты тега asr-models (VAD и Whisper)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for tag in asr-models vad-models punctuation-models speech-enhancement-models; do
+            echo "===== $tag ====="
+            curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/tags/$tag" \
+            | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+if "assets" not in r:
+    print("нет такого тега"); raise SystemExit
+names = [a["name"] for a in r["assets"]]
+keep = [n for n in names if any(k in n.lower() for k in
+        ("whisper-tiny", "whisper-base", "whisper-small", "silero", "vad",
+         "gtcrn", "punct"))]
+print(len(names), "ассетов всего, релевантных:", len(keep))
+for n in sorted(keep)[:60]:
+    print("   ", n)
+' || echo "тег $tag недоступен"
+          done
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Скачать AAR sherpa-onnx
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x tools/fetch-sherpa.sh
+          ./tools/fetch-sherpa.sh
+
+      - name: Собрать debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Переименовать APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "out/OverlayTranslator-debug.apk"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: out/*.apk
+          if-no-files-found: error

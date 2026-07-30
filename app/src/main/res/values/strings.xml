@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Переводчик поверх</string>
+    <string name="notif_channel_name">Сессия перевода</string>
+    <string name="notif_channel_desc">Показывает, что идёт захват звука и перевод</string>
+</resources>
