@@ -38,6 +38,7 @@ class SubtitleOverlay(
     private var statusView: TextView? = null
     private var translationView: TextView? = null
     private var sourceView: TextView? = null
+    private var partialView: TextView? = null
     private var collapsed = false
 
     /**
@@ -100,9 +101,19 @@ class SubtitleOverlay(
             text = ""
         }
 
+        val partial = TextView(context).apply {
+            setTextColor(Color.parseColor("#6F7787"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 4f)
+            maxWidth = maxTextWidth
+            maxLines = 2
+            visibility = View.GONE
+            text = ""
+        }
+
         container.addView(status)
         container.addView(translation)
         container.addView(sourceText)
+        container.addView(partial)
         attachDragAndCollapse(container, translation, sourceText)
 
         windowManager.addView(container, layoutParams)
@@ -110,6 +121,7 @@ class SubtitleOverlay(
         statusView = status
         translationView = translation
         sourceView = sourceText
+        partialView = partial
     }
 
     /**
@@ -193,6 +205,17 @@ class SubtitleOverlay(
         sourceView?.text = source
     }
 
+    /**
+     * Предварительная гипотеза распознавания — то, что модель слышит прямо
+     * сейчас, ещё до перевода. Показывается тусклым, чтобы не путать с готовым
+     * переводом, и служит признаком «идёт работа», а не «зависло».
+     */
+    fun setPartial(text: String) {
+        val view = partialView ?: return
+        view.text = text
+        view.visibility = if (text.isBlank() || collapsed) View.GONE else View.VISIBLE
+    }
+
     /** Применяет изменённые настройки прозрачности, шрифта и второй строки. */
     fun applySettings() {
         (root?.background as? GradientDrawable)?.setColor(backgroundColor())
@@ -212,6 +235,7 @@ class SubtitleOverlay(
         statusView = null
         translationView = null
         sourceView = null
+        partialView = null
     }
 
     private fun backgroundColor(): Int {

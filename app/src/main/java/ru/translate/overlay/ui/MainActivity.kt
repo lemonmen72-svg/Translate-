@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ru.translate.overlay.core.AsrMode
 import ru.translate.overlay.core.DenoiseMode
 import ru.translate.overlay.core.LoadProgress
 import ru.translate.overlay.core.MtBackend
@@ -52,6 +53,7 @@ import ru.translate.overlay.core.SessionState
 import ru.translate.overlay.core.Settings
 import ru.translate.overlay.core.SourceLang
 import ru.translate.overlay.core.Stage
+import ru.translate.overlay.core.Voice
 import ru.translate.overlay.models.ModelStore
 import ru.translate.overlay.service.TranslateService
 
@@ -87,6 +89,9 @@ private fun MainScreen(modifier: Modifier = Modifier) {
     var thermalThrottle by remember { mutableStateOf(settings.thermalThrottle) }
     var fontSp by remember { mutableStateOf(settings.overlayFontSp) }
     var opacity by remember { mutableStateOf(settings.overlayOpacity) }
+    var voice by remember { mutableStateOf(settings.voice) }
+    var beams by remember { mutableStateOf(settings.beams) }
+    var muteWhileSpeaking by remember { mutableStateOf(settings.muteWhileSpeaking) }
 
     val stage by SessionState.stage.collectAsState()
     val history by SessionState.history.collectAsState()
@@ -94,6 +99,7 @@ private fun MainScreen(modifier: Modifier = Modifier) {
     val dropped by SessionState.dropped.collectAsState()
     val loadText by LoadProgress.text.collectAsState()
     val loadPercent by LoadProgress.percent.collectAsState()
+    val partial by SessionState.partial.collectAsState()
 
     val running = stage !is Stage.Idle && stage !is Stage.Error
 
@@ -130,6 +136,9 @@ private fun MainScreen(modifier: Modifier = Modifier) {
             )
             if (loadText.isNotEmpty() && stage is Stage.Loading) {
                 Text("$loadText — $loadPercent%", fontSize = 12.sp)
+            }
+            if (partial.isNotBlank()) {
+                Text("Слышу: $partial", fontSize = 12.sp)
             }
             if (skipped > 0) {
                 Text(
@@ -204,7 +213,20 @@ private fun MainScreen(modifier: Modifier = Modifier) {
             )
             Text(profile.subtitle, fontSize = 12.sp)
             Text(
-                "Модель ASR: ${profile.asrModel.title}, около ${profile.asrModel.approxMb} МБ.",
+                when (profile.asrMode) {
+                    AsrMode.STREAMING ->
+                        "Потоковая модель, около " +
+                            "${sourceLang.streamingModel.approxMb} МБ" +
+                            if (sourceLang.streamingModel.hasPunctuation) {
+                                ", со знаками препинания"
+                            } else {
+                                ", без знаков препинания"
+                            }
+
+                    AsrMode.OFFLINE ->
+                        "${profile.asrModel.title}, около " +
+                            "${profile.asrModel.approxMb} МБ"
+                },
                 fontSize = 12.sp,
             )
         }
@@ -219,6 +241,22 @@ private fun MainScreen(modifier: Modifier = Modifier) {
                     onSelect = { mtBackend = it; settings.mtBackend = it },
                 )
                 Text(mtBackend.subtitle, fontSize = 12.sp)
+                if (mtBackend == MtBackend.OPUS_MT) {
+                    Text(
+                        "Ширина beam search: $beams. " +
+                            "Модель обучалась с 4; меньше — быстрее, но грубее.",
+                        fontSize = 12.sp,
+                    )
+                    Slider(
+                        value = beams.toFloat(),
+                        valueRange = 1f..6f,
+                        steps = 4,
+                        onValueChange = {
+                            beams = it.toInt()
+                            settings.beams = beams
+                        },
+                    )
+                }
                 if (mtBackend == MtBackend.OPUS_MT && sourceLang == SourceLang.ZH) {
                     Text(
                         "Для китайского прямой модели нет, перевод идёт zh→en→ru. " +
@@ -287,9 +325,29 @@ private fun MainScreen(modifier: Modifier = Modifier) {
             CheckRow(
                 "Озвучивать перевод",
                 tts,
-                "Системный русский голос. Пока он говорит, распознавание " +
-                    "приостанавливается — иначе приложение услышит само себя.",
+                "Голос проигрывается как звук ассистента, поэтому в собственный " +
+                    "захват не попадает и распознавание не прерывается.",
             ) { tts = it; settings.tts = it }
+
+            if (tts) {
+                Text("Голос", fontSize = 13.sp)
+                ChipRow(
+                    options = Voice.entries,
+                    selected = voice,
+                    label = { it.title },
+                    onSelect = { voice = it; settings.voice = it },
+                )
+                Text(voice.subtitle, fontSize = 11.sp)
+                if (voice.modelId != null) {
+                    Text("Загрузка около ${voice.approxMb} МБ", fontSize = 11.sp)
+                }
+                CheckRow(
+                    "Не слушать во время озвучки",
+                    muteWhileSpeaking,
+                    "Нужно только если на вашей прошивке приложение всё равно " +
+                        "слышит собственный голос.",
+                ) { muteWhileSpeaking = it; settings.muteWhileSpeaking = it }
+            }
 
             CheckRow(
                 "Снижать нагрузку при нагреве",

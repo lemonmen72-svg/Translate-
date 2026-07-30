@@ -19,12 +19,40 @@ class Settings(context: Context) {
         set(value) = prefs.edit().putString(KEY_SOURCE, value.name).apply()
 
     var profile: Profile
-        get() = enumOr(KEY_PROFILE, Profile.SPEED)
+        get() = enumOr(KEY_PROFILE, Profile.SYNC)
         set(value) = prefs.edit().putString(KEY_PROFILE, value.name).apply()
 
     var mtBackend: MtBackend
-        get() = enumOr(KEY_MT, MtBackend.ML_KIT)
+        get() = enumOr(KEY_MT, MtBackend.OPUS_MT)
         set(value) = prefs.edit().putString(KEY_MT, value.name).apply()
+
+    /**
+     * Ширина beam search при переводе.
+     *
+     * Модели Opus-MT обучались с num_beams = 4, и замер на живых фразах показал,
+     * что жадное декодирование (beams = 1) меняет результат в четырёх фразах из
+     * шести, всегда к худшему. Меньше 4 ставить есть смысл только ради скорости
+     * на слабом устройстве.
+     */
+    var beams: Int
+        get() = prefs.getInt(KEY_BEAMS, 4)
+        set(value) = prefs.edit().putInt(KEY_BEAMS, value.coerceIn(1, 8)).apply()
+
+    var voice: Voice
+        get() = enumOr(KEY_VOICE, Voice.IRINA)
+        set(value) = prefs.edit().putString(KEY_VOICE, value.name).apply()
+
+    /**
+     * Не слушать во время озвучки.
+     *
+     * По умолчанию выключено. Озвучка идёт с usage ASSISTANT, которого нет в
+     * списке захватываемых, поэтому свой голос в пайплайн не попадает и глохнуть
+     * незачем. Включать только если на конкретной прошивке приложение всё-таки
+     * слышит само себя.
+     */
+    var muteWhileSpeaking: Boolean
+        get() = prefs.getBoolean(KEY_MUTE_SPEAKING, false)
+        set(value) = prefs.edit().putBoolean(KEY_MUTE_SPEAKING, value).apply()
 
     var denoise: DenoiseMode
         get() = enumOr(KEY_DENOISE, DenoiseMode.OFF)
@@ -95,6 +123,9 @@ class Settings(context: Context) {
         const val KEY_PUNCT = "punctuation"
         const val KEY_TTS = "tts"
         const val KEY_MERGE = "merge_fragments"
+        const val KEY_BEAMS = "mt_beams"
+        const val KEY_VOICE = "voice"
+        const val KEY_MUTE_SPEAKING = "mute_while_speaking"
         const val KEY_OPACITY = "overlay_opacity"
         const val KEY_FONT = "overlay_font_sp"
         const val KEY_SHOW_SOURCE = "show_source_text"

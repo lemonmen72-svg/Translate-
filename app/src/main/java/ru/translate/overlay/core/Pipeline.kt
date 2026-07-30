@@ -13,6 +13,7 @@ import kotlinx.coroutines.withContext
 import ru.translate.overlay.asr.AsrResult
 import ru.translate.overlay.asr.HallucinationFilter
 import ru.translate.overlay.asr.Punctuator
+import ru.translate.overlay.asr.StreamingAsr
 import ru.translate.overlay.asr.WhisperAsr
 import ru.translate.overlay.audio.Denoiser
 import ru.translate.overlay.capture.AudioCapture
@@ -21,22 +22,35 @@ import ru.translate.overlay.models.ModelStore
 import ru.translate.overlay.mt.MlKitTranslator
 import ru.translate.overlay.mt.NoOpTranslator
 import ru.translate.overlay.mt.OpusMtTranslator
+import ru.translate.overlay.mt.TextSplitter
 import ru.translate.overlay.mt.Translator
+import ru.translate.overlay.tts.PiperSpeaker
+import ru.translate.overlay.tts.PiperTts
 import ru.translate.overlay.tts.RussianTts
+import ru.translate.overlay.tts.Speaker
+import ru.translate.overlay.tts.SystemSpeaker
 import ru.translate.overlay.vad.VadGate
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Сборка пайплайна: захват → VAD → (денойз) → ASR → фильтр → (пунктуация) →
- * перевод → субтитры → (озвучка).
+ * Сборка пайплайна.
  *
- * Ключевое архитектурное решение — политика сброса между VAD и ASR. На длинной
- * непрерывной речи ASR не успевает за реальным временем, и без сброса очередь
- * растёт, а вместе с ней неограниченно растёт задержка: через минуту просмотра
- * субтитры отстают на полминуты. Это режим по умолчанию, если ничего не делать.
- * Поэтому между стадиями стоит слот на одну фразу с вытеснением старой:
- * устаревший перевод для субтитров бесполезен, лучше потерять фразу.
+ * Два режима распознавания.
+ *
+ * **Потоковый** (по умолчанию): модель обрабатывает поток чанками по 160 мс и
+ * после каждого отдаёт текущую гипотезу. Готовые предложения уходят в перевод
+ * сразу, ждать паузы в речи не нужно. Это ответ на главную претензию к первой
+ * версии — там пайплайн ждал тишины, а на непрерывном закадровом тексте пауз
+ * почти нет, и первый перевод появлялся через десяток секунд.
+ *
+ * **Офлайн**: прежняя схема с VAD и Whisper. Оставлена как режим «Точный»:
+ * Whisper устойчивее на шуме и музыке, но по определению не может выдать текст
+ * раньше конца фразы.
+ *
+ * Перевод в обоих режимах идёт по предложениям, а не целым куском: модели
+ * перевода обучены на отдельных предложениях, и на блобе из четырёх качество
+ * заметно проседает.
  */
 class Pipeline(
     private val context: Context,
@@ -44,40 +58,40 @@ class Pipeline(
     private val thermal: ThermalGovernor,
 ) {
 
-    private class Segment(
-        val samples: FloatArray,
-        /** Момент, когда VAD признал фразу законченной. */
-        val endedAtMs: Long,
-    ) {
+    private class Segment(val samples: FloatArray, val endedAtMs: Long) {
         val durationMs: Long get() = samples.size * 1000L / AudioCapture.SAMPLE_RATE
     }
 
+    /** Готовый к переводу текст с моментом, когда речь закончилась. */
+    private class Utterance(
+        val text: String,
+        val endedAtMs: Long,
+        val asrMs: Long,
+        val segmentDurationMs: Long,
+    )
+
     /**
-     * Слот на одну фразу с вытеснением старой.
+     * Слот на одну реплику с вытеснением старой.
      *
-     * Именно AtomicReference, а не Channel с BufferOverflow.DROP_OLDEST: канал
-     * вытесняет молча, а нам нужно посчитать сброшенные фразы, чтобы показать
-     * их пользователю — иначе пропуски выглядят как зависание.
+     * Именно AtomicReference, а не Channel с DROP_OLDEST: канал вытесняет молча,
+     * а сброшенные фразы надо посчитать и показать — иначе пропуски выглядят как
+     * зависание.
      */
-    private val pending = AtomicReference<Segment?>(null)
+    private val pending = AtomicReference<Utterance?>(null)
     private val signal = Channel<Unit>(Channel.CONFLATED)
 
     private val phraseId = AtomicLong(0)
 
-    private var asr: WhisperAsr? = null
+    private var streaming: StreamingAsr? = null
+    private var offlineAsr: WhisperAsr? = null
     private var vad: VadGate? = null
     private var translator: Translator? = null
     private var denoiser: Denoiser? = null
     private var punctuator: Punctuator? = null
-    private var tts: RussianTts? = null
+    private var speaker: Speaker? = null
 
-    /** Незакрытый обрывок фразы, ждущий склейки со следующей. */
     private var heldFragment: String? = null
 
-    /**
-     * Запускает сессию и работает, пока [scope] жив. Возврат из функции означает
-     * остановку.
-     */
     suspend fun run(projection: MediaProjection, scope: CoroutineScope) {
         val lang = settings.sourceLang
         val profile = settings.profile
@@ -91,86 +105,135 @@ class Pipeline(
             return
         }
 
-        val vadGate = vad ?: return
         SessionState.setStage(Stage.Listening)
-
-        val consumer = scope.launch(Dispatchers.Default) { consumeSegments() }
+        val consumer = scope.launch(Dispatchers.Default) { consumeUtterances() }
 
         try {
-            AudioCapture(projection).frames().collect { frame ->
-                // Пока говорит наш собственный TTS, кадры в VAD не подаём: иначе
-                // пайплайн распознает свой же русский голос, который для системы
-                // такое же media-аудио, как и звук TikTok.
-                if (tts?.speaking?.get() == true) return@collect
-
-                for (samples in vadGate.push(frame)) {
-                    offer(Segment(samples, System.currentTimeMillis()))
-                }
-                updateListeningStage(vadGate)
+            if (profile.asrMode == AsrMode.STREAMING) {
+                collectStreaming(projection)
+            } else {
+                collectOffline(projection)
             }
         } finally {
-            for (samples in runCatching { vadGate.flush() }.getOrDefault(emptyList())) {
-                offer(Segment(samples, System.currentTimeMillis()))
-            }
+            flushTail()
             consumer.cancel()
         }
     }
 
-    private fun updateListeningStage(vadGate: VadGate) {
-        val stage = SessionState.stage.value
-        // Не перебиваем Recognizing/Translating: там своя стадия обработки.
-        if (stage is Stage.Listening || stage is Stage.Skipped) {
-            if (vadGate.isSpeaking()) SessionState.setStage(Stage.Listening)
+    /** Потоковый режим: текст появляется по ходу речи. */
+    private suspend fun collectStreaming(projection: MediaProjection) {
+        val asr = streaming ?: return
+        AudioCapture(projection).frames().collect { frame ->
+            // Пропускаем кадры на время озвучки только если пользователь сам
+            // включил эту страховку: озвучка идёт с usage ASSISTANT и в захват
+            // не попадает, а глохнуть на время чтения длинной фразы — ровно та
+            // проблема, из-за которой перевод «не начинался».
+            if (settings.muteWhileSpeaking && speaker?.isSpeaking == true) return@collect
+
+            val started = System.nanoTime()
+            val update = asr.push(frame)
+            val elapsed = (System.nanoTime() - started) / 1_000_000
+
+            when (update) {
+                is StreamingAsr.Update.Partial -> {
+                    // Показываем предварительный текст сразу: пользователь видит,
+                    // что приложение слышит речь, ещё до перевода.
+                    SessionState.setPartial(update.text)
+                    SessionState.setStage(Stage.Recognizing)
+                }
+
+                is StreamingAsr.Update.Final -> {
+                    SessionState.setPartial("")
+                    offer(
+                        Utterance(
+                            text = update.text,
+                            endedAtMs = System.currentTimeMillis(),
+                            asrMs = elapsed,
+                            segmentDurationMs = 0,
+                        )
+                    )
+                }
+
+                StreamingAsr.Update.Nothing -> Unit
+            }
         }
     }
 
-    private fun offer(segment: Segment) {
-        if (pending.getAndSet(segment) != null) {
+    /** Офлайн-режим: VAD режет на фразы, Whisper распознаёт целиком. */
+    private suspend fun collectOffline(projection: MediaProjection) {
+        val vadGate = vad ?: return
+        val recognizer = offlineAsr ?: return
+        AudioCapture(projection).frames().collect { frame ->
+            if (settings.muteWhileSpeaking && speaker?.isSpeaking == true) return@collect
+
+            for (samples in vadGate.push(frame)) {
+                val segment = Segment(samples, System.currentTimeMillis())
+                val prepared = maybeDenoise(segment.samples)
+                val result: AsrResult =
+                    withContext(Dispatchers.Default) { recognizer.transcribe(prepared) }
+                val verdict =
+                    HallucinationFilter.check(result.text, segment.durationMs)
+                if (verdict is HallucinationFilter.Verdict.Reject) {
+                    SessionState.noteSkipped()
+                    SessionState.setStage(Stage.Skipped(verdict.reason))
+                    continue
+                }
+                offer(
+                    Utterance(
+                        text = result.text,
+                        endedAtMs = segment.endedAtMs,
+                        asrMs = result.elapsedMs,
+                        segmentDurationMs = segment.durationMs,
+                    )
+                )
+            }
+            if (vadGate.isSpeaking() && SessionState.stage.value is Stage.Skipped) {
+                SessionState.setStage(Stage.Listening)
+            }
+        }
+    }
+
+    private suspend fun flushTail() {
+        val tail = when {
+            streaming != null -> runCatching { streaming?.finish() }.getOrNull()
+            else -> null
+        }
+        if (!tail.isNullOrBlank()) {
+            offer(Utterance(tail, System.currentTimeMillis(), 0, 0))
+        }
+    }
+
+    private suspend fun maybeDenoise(samples: FloatArray): FloatArray {
+        val d = denoiser ?: return samples
+        val allowed = !settings.thermalThrottle || thermal.optionalStagesAllowed()
+        if (!allowed) return samples
+        return withContext(Dispatchers.Default) { d.process(samples) }
+    }
+
+    private fun offer(utterance: Utterance) {
+        if (utterance.text.isBlank()) return
+        if (pending.getAndSet(utterance) != null) {
             SessionState.noteDropped()
             SessionState.setStage(Stage.Skipped("не успеваю, фраза сброшена"))
         }
         signal.trySend(Unit)
     }
 
-    private suspend fun consumeSegments() {
+    private suspend fun consumeUtterances() {
         while (currentCoroutineContext().isActive) {
             signal.receive()
             while (true) {
-                val segment = pending.getAndSet(null) ?: break
-                runCatching { process(segment) }
-                    .onFailure { Log.e(TAG, "Сегмент не обработался", it) }
+                val utterance = pending.getAndSet(null) ?: break
+                runCatching { translateAndShow(utterance) }
+                    .onFailure { Log.e(TAG, "Реплика не обработалась", it) }
             }
         }
     }
 
-    private suspend fun process(segment: Segment) {
-        val recognizer = asr ?: return
+    private suspend fun translateAndShow(utterance: Utterance) {
         val optionalAllowed = !settings.thermalThrottle || thermal.optionalStagesAllowed()
 
-        var samples = segment.samples
-        var denoiseMs = 0L
-        denoiser?.takeIf { optionalAllowed }?.let { d ->
-            val started = System.nanoTime()
-            samples = withContext(Dispatchers.Default) { d.process(samples) }
-            denoiseMs = (System.nanoTime() - started) / 1_000_000
-        }
-
-        SessionState.setStage(Stage.Recognizing)
-        val asrResult: AsrResult =
-            withContext(Dispatchers.Default) { recognizer.transcribe(samples) }
-
-        when (val verdict =
-            HallucinationFilter.check(asrResult.text, segment.durationMs)) {
-            is HallucinationFilter.Verdict.Reject -> {
-                SessionState.noteSkipped()
-                SessionState.setStage(Stage.Skipped(verdict.reason))
-                return
-            }
-
-            HallucinationFilter.Verdict.Accept -> Unit
-        }
-
-        var sourceText = asrResult.text
+        var sourceText = utterance.text
         var punctuationMs = 0L
         punctuator?.takeIf { optionalAllowed }?.let { p ->
             val started = System.nanoTime()
@@ -178,10 +241,6 @@ class Pipeline(
             punctuationMs = (System.nanoTime() - started) / 1_000_000
         }
 
-        // Склейка обрывков: короткий фрагмент без завершающего знака — скорее
-        // всего продолжение мысли, а не отдельная фраза. Это единственный
-        // честный способ дать переводчику контекст: ни ML Kit, ни обычный
-        // Opus-MT не принимают контекст отдельным параметром.
         if (settings.mergeFragments) {
             val merged = mergeWithHeld(sourceText)
             if (merged == null) {
@@ -193,38 +252,43 @@ class Pipeline(
 
         val needsMt = settings.sourceLang.needsTranslation
         if (needsMt) SessionState.setStage(Stage.Translating)
-        val mt = translator?.translate(sourceText)
-        val translated = mt?.text ?: sourceText
 
-        val phrase = Phrase(
-            id = phraseId.incrementAndGet(),
-            endedAtMs = segment.endedAtMs,
-            sourceText = sourceText,
-            translatedText = translated,
-            timings = Timings(
-                segmentDurationMs = segment.durationMs,
-                denoiseMs = denoiseMs,
-                asrMs = asrResult.elapsedMs,
-                punctuationMs = punctuationMs,
-                mtMs = mt?.elapsedMs ?: 0,
-            ),
-        )
-        SessionState.publish(phrase)
+        // Переводим по предложениям и показываем каждое сразу, как готово: на
+        // длинной реплике субтитры идут потоком, а не появляются целым абзацем.
+        val sentences = TextSplitter.split(sourceText)
+        var index = 0
+        for (sentence in sentences) {
+            val mt = translator?.translate(sentence)
+            val translated = mt?.text?.takeIf { it.isNotBlank() } ?: sentence
 
-        val speaker = tts
-        if (speaker != null && translated.isNotBlank()) {
-            SessionState.setStage(Stage.Speaking)
-            speaker.speak(translated)
-        } else {
-            SessionState.setStage(Stage.Listening)
+            val phrase = Phrase(
+                id = phraseId.incrementAndGet(),
+                endedAtMs = utterance.endedAtMs,
+                sourceText = sentence,
+                translatedText = translated,
+                timings = Timings(
+                    segmentDurationMs = utterance.segmentDurationMs,
+                    asrMs = if (index == 0) utterance.asrMs else 0,
+                    punctuationMs = if (index == 0) punctuationMs else 0,
+                    mtMs = mt?.elapsedMs ?: 0,
+                ),
+            )
+            SessionState.publish(phrase)
+
+            speaker?.let { voice ->
+                SessionState.setStage(Stage.Speaking)
+                // Внутри одной реплики дочитываем, между репликами — обрываем:
+                // устаревший перевод озвучивать бессмысленно.
+                withContext(Dispatchers.IO) {
+                    voice.speak(translated, continuePhrase = index > 0)
+                }
+            }
+            index++
         }
+
+        SessionState.setStage(Stage.Listening)
     }
 
-    /**
-     * Возвращает текст для перевода или null, если фрагмент отложен до
-     * следующей фразы. Удержание ограничено по времени, чтобы обрывок не
-     * застревал навсегда, когда речь просто закончилась.
-     */
     private fun mergeWithHeld(text: String): String? {
         val held = heldFragment
         if (held != null) {
@@ -241,91 +305,155 @@ class Pipeline(
 
     private suspend fun prepare(lang: SourceLang, profile: Profile) {
         val store = ModelStore(context)
-
-        val keys = buildList {
-            add(ModelKeys.SILERO_VAD)
-            val model = profile.asrModel.id
-            add(ModelKeys.whisperEncoder(model))
-            add(ModelKeys.whisperDecoder(model))
-            add(ModelKeys.whisperTokens(model))
-            if (settings.denoise == DenoiseMode.GTCRN) add(ModelKeys.GTCRN)
-            if (settings.punctuation && lang.supportsPunctuationModel) {
-                add(ModelKeys.PUNCT_MODEL)
-            }
-        }
-
-        val entries = store.resolve(keys)
-        store.ensure(entries) { what, percent ->
-            SessionState.setStage(Stage.Loading)
+        val progress: (String, Int) -> Unit = { what, percent ->
             LoadProgress.update(what, percent)
         }
-        val byKey = entries.associateBy { it.key }
-        fun path(key: String) = store.localPath(byKey.getValue(key))
 
-        val silenceMultiplier =
-            if (settings.thermalThrottle) thermal.silenceMultiplier() else 1f
-
-        vad = VadGate(
-            modelPath = path(ModelKeys.SILERO_VAD),
-            minSilenceSec = profile.minSilenceSec * silenceMultiplier,
-            maxSpeechSec = profile.maxSpeechSec,
-        )
-
-        asr = WhisperAsr(
-            encoderPath = path(ModelKeys.whisperEncoder(profile.asrModel.id)),
-            decoderPath = path(ModelKeys.whisperDecoder(profile.asrModel.id)),
-            tokensPath = path(ModelKeys.whisperTokens(profile.asrModel.id)),
-            lang = lang,
-            numThreads = profile.asrThreads,
-        )
+        if (profile.asrMode == AsrMode.STREAMING) {
+            val model = lang.streamingModel.id
+            val entries = store.resolve(
+                listOf(
+                    ModelKeys.streamEncoder(model),
+                    ModelKeys.streamDecoder(model),
+                    ModelKeys.streamJoiner(model),
+                    ModelKeys.streamTokens(model),
+                )
+            )
+            store.ensure(entries, progress)
+            val byKey = entries.associateBy { it.key }
+            fun path(key: String) = store.localPath(byKey.getValue(key))
+            streaming = StreamingAsr(
+                encoderPath = path(ModelKeys.streamEncoder(model)),
+                decoderPath = path(ModelKeys.streamDecoder(model)),
+                joinerPath = path(ModelKeys.streamJoiner(model)),
+                tokensPath = path(ModelKeys.streamTokens(model)),
+                numThreads = profile.asrThreads,
+                endpointSilenceSec = profile.endpointSilenceSec *
+                    if (settings.thermalThrottle) thermal.silenceMultiplier() else 1f,
+            )
+        } else {
+            val keys = mutableListOf(ModelKeys.SILERO_VAD)
+            val model = profile.asrModel.id
+            keys += ModelKeys.whisperEncoder(model)
+            keys += ModelKeys.whisperDecoder(model)
+            keys += ModelKeys.whisperTokens(model)
+            val entries = store.resolve(keys)
+            store.ensure(entries, progress)
+            val byKey = entries.associateBy { it.key }
+            fun path(key: String) = store.localPath(byKey.getValue(key))
+            vad = VadGate(
+                modelPath = path(ModelKeys.SILERO_VAD),
+                minSilenceSec = profile.endpointSilenceSec *
+                    if (settings.thermalThrottle) thermal.silenceMultiplier() else 1f,
+                maxSpeechSec = profile.maxSpeechSec,
+            )
+            offlineAsr = WhisperAsr(
+                encoderPath = path(ModelKeys.whisperEncoder(model)),
+                decoderPath = path(ModelKeys.whisperDecoder(model)),
+                tokensPath = path(ModelKeys.whisperTokens(model)),
+                lang = lang,
+                numThreads = profile.asrThreads,
+            )
+        }
 
         if (settings.denoise == DenoiseMode.GTCRN) {
-            denoiser = runCatching { Denoiser(path(ModelKeys.GTCRN)) }
-                .onFailure { Log.w(TAG, "Денойз не поднялся, работаю без него", it) }
-                .getOrNull()
+            denoiser = runCatching {
+                val entry = store.resolve(listOf(ModelKeys.GTCRN))
+                store.ensure(entry, progress)
+                Denoiser(store.localPath(entry.first()))
+            }.onFailure { Log.w(TAG, "Денойз не поднялся", it) }.getOrNull()
         }
 
-        if (settings.punctuation && lang.supportsPunctuationModel) {
-            punctuator = runCatching { Punctuator(path(ModelKeys.PUNCT_MODEL)) }
-                .onFailure { Log.w(TAG, "Пунктуация не поднялась", it) }
-                .getOrNull()
+        // Пунктуация нужна только там, где её не даёт сам распознаватель: в
+        // потоковом режиме для en и zh знаки уже расставлены моделью.
+        val punctuationNeeded = settings.punctuation &&
+            lang.supportsPunctuationModel &&
+            !(profile.asrMode == AsrMode.STREAMING && lang.streamingModel.hasPunctuation)
+        if (punctuationNeeded) {
+            punctuator = runCatching {
+                val entry = store.resolve(listOf(ModelKeys.PUNCT_MODEL))
+                store.ensure(entry, progress)
+                Punctuator(store.localPath(entry.first()))
+            }.onFailure { Log.w(TAG, "Пунктуация не поднялась", it) }.getOrNull()
         }
 
-        translator = createTranslator(lang, store)
-        translator?.prepare { what, percent -> LoadProgress.update(what, percent) }
+        translator = createTranslator(lang, store, progress)
+        translator?.prepare(progress)
 
         if (settings.tts) {
-            tts = RussianTts(context).takeIf { it.init() }
-            if (tts == null) {
-                Log.w(TAG, "Системный TTS с русским голосом недоступен")
-            }
+            speaker = createSpeaker(store, progress)
+            if (speaker == null) Log.w(TAG, "Озвучка недоступна")
         }
     }
 
-    private suspend fun createTranslator(lang: SourceLang, store: ModelStore): Translator {
+    private suspend fun createTranslator(
+        lang: SourceLang,
+        store: ModelStore,
+        progress: (String, Int) -> Unit,
+    ): Translator {
         if (!lang.needsTranslation) return NoOpTranslator
         if (settings.mtBackend == MtBackend.OPUS_MT) {
-            val opus = runCatching { OpusMtTranslator.create(lang, store) }
-                .onFailure { Log.w(TAG, "Opus-MT не поднялся, откатываюсь на ML Kit", it) }
-                .getOrNull()
+            val opus = runCatching {
+                OpusMtTranslator.create(lang, store, settings.beams, progress)
+            }.onFailure {
+                Log.w(TAG, "Opus-MT не поднялся, откатываюсь на ML Kit", it)
+            }.getOrNull()
             if (opus != null) return opus
         }
         return MlKitTranslator(lang)
     }
 
+    private suspend fun createSpeaker(
+        store: ModelStore,
+        progress: (String, Int) -> Unit,
+    ): Speaker? {
+        val voice = settings.voice
+        val modelId = voice.modelId
+        if (modelId != null) {
+            val piper = runCatching {
+                val entries = store.resolve(
+                    listOf(
+                        ModelKeys.voiceModel(modelId),
+                        ModelKeys.voiceTokens(modelId),
+                        ModelKeys.ESPEAK_DATA,
+                    )
+                )
+                store.ensure(entries, progress)
+                val byKey = entries.associateBy { it.key }
+                val dataDir = store.unpackZip(
+                    byKey.getValue(ModelKeys.ESPEAK_DATA),
+                    "espeak-ng-data",
+                    progress,
+                )
+                PiperTts(
+                    modelPath = store.localPath(byKey.getValue(ModelKeys.voiceModel(modelId))),
+                    tokensPath = store.localPath(byKey.getValue(ModelKeys.voiceTokens(modelId))),
+                    dataDir = dataDir,
+                )
+            }.onFailure {
+                Log.w(TAG, "Голос $modelId не поднялся, беру системный", it)
+            }.getOrNull()
+            if (piper != null) return PiperSpeaker(piper)
+        }
+        val system = RussianTts(context)
+        return if (system.init()) SystemSpeaker(system) else null
+    }
+
     fun release() {
+        runCatching { streaming?.release() }
         runCatching { vad?.release() }
-        runCatching { asr?.release() }
+        runCatching { offlineAsr?.release() }
         runCatching { denoiser?.release() }
         runCatching { punctuator?.release() }
         runCatching { translator?.release() }
-        runCatching { tts?.release() }
+        runCatching { speaker?.release() }
+        streaming = null
         vad = null
-        asr = null
+        offlineAsr = null
         denoiser = null
         punctuator = null
         translator = null
-        tts = null
+        speaker = null
         pending.set(null)
         heldFragment = null
     }
@@ -333,11 +461,11 @@ class Pipeline(
     private companion object {
         const val TAG = "Pipeline"
         const val FRAGMENT_MAX_LEN = 30
-        const val SENTENCE_END = ".!?…。！？»\")]" 
+        const val SENTENCE_END = ".!?…。！？»\")]"
     }
 }
 
-/** Прогресс загрузки моделей — для экрана настроек и уведомления. */
+/** Прогресс загрузки моделей. */
 object LoadProgress {
     private val _text = kotlinx.coroutines.flow.MutableStateFlow("")
     val text: kotlinx.coroutines.flow.StateFlow<String> = _text

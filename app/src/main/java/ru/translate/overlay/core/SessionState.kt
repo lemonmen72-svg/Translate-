@@ -94,6 +94,14 @@ object SessionState {
     /** Сколько сегментов отброшено за сессию: галлюцинации плюс back-pressure. */
     val skipped: StateFlow<Int> = _skipped.asStateFlow()
 
+    private val _partial = MutableStateFlow("")
+
+    /**
+     * Предварительная гипотеза потокового распознавания: показывается сразу, до
+     * перевода, чтобы было видно, что приложение слышит речь.
+     */
+    val partial: StateFlow<String> = _partial.asStateFlow()
+
     private val _overlaySettingsVersion = MutableStateFlow(0)
 
     /**
@@ -117,6 +125,10 @@ object SessionState {
         _history.update { (it + phrase).takeLast(MAX_HISTORY) }
     }
 
+    fun setPartial(text: String) {
+        _partial.value = text
+    }
+
     fun notifyOverlaySettingsChanged() {
         _overlaySettingsVersion.update { it + 1 }
     }
@@ -133,6 +145,7 @@ object SessionState {
     fun reset() {
         _stage.value = Stage.Idle
         _current.value = null
+        _partial.value = ""
         _skipped.value = 0
         _dropped.value = 0
     }

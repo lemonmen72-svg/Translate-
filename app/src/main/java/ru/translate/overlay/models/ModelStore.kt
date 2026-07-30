@@ -9,6 +9,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.zip.ZipInputStream
 
 /**
  * Хранилище моделей.
@@ -113,6 +114,63 @@ class ModelStore(context: Context) {
         onProgress("Готово", 100)
     }
 
+    /**
+     * Распаковывает ZIP в подкаталог и возвращает путь к нему.
+     *
+     * Нужно для каталога espeak-ng-data, без которого не работают голоса Piper:
+     * это несколько сотен мелких файлов, а sherpa-onnx требует путь к каталогу
+     * на файловой системе. ZIP выбран потому, что его Android распаковывает
+     * штатным java.util.zip, а tar.bz2, в котором модели раздаёт sherpa-onnx, —
+     * не умеет.
+     */
+    suspend fun unpackZip(
+        entry: Entry,
+        dirName: String,
+        onProgress: (String, Int) -> Unit = { _, _ -> },
+    ): String = withContext(Dispatchers.IO) {
+        val target = File(root, dirName)
+        val marker = File(target, ".unpacked")
+        if (marker.isFile) return@withContext target.absolutePath
+
+        val archive = File(root, entry.file)
+        require(archive.isFile) { "Архив ${entry.file} не скачан" }
+
+        onProgress("Распаковка $dirName", 0)
+        target.deleteRecursively()
+        target.mkdirs()
+
+        ZipInputStream(archive.inputStream().buffered()).use { zip ->
+            while (true) {
+                val item = zip.nextEntry ?: break
+                // Защита от выхода за пределы каталога через «..» в имени.
+                val out = File(target, item.name).canonicalFile
+                if (!out.path.startsWith(target.canonicalFile.path)) {
+                    zip.closeEntry()
+                    continue
+                }
+                if (item.isDirectory) {
+                    out.mkdirs()
+                } else {
+                    out.parentFile?.mkdirs()
+                    out.outputStream().use { output -> zip.copyTo(output) }
+                }
+                zip.closeEntry()
+            }
+        }
+        marker.writeText("ok")
+        onProgress("Распаковка $dirName", 100)
+
+        // Часть архивов кладёт всё в один корневой каталог — тогда нужный путь
+        // на уровень глубже.
+        val children = target.listFiles()?.filter { it.name != ".unpacked" } ?: emptyList()
+        val single = children.singleOrNull()
+        if (single != null && single.isDirectory) {
+            single.absolutePath
+        } else {
+            target.absolutePath
+        }
+    }
+
     /** Освобождает место: удаляет все скачанные модели. */
     fun deleteAll() {
         root.listFiles()?.forEach { it.deleteRecursively() }
@@ -205,6 +263,16 @@ object ModelKeys {
     fun whisperEncoder(model: String) = "$model.encoder"
     fun whisperDecoder(model: String) = "$model.decoder"
     fun whisperTokens(model: String) = "$model.tokens"
+
+    fun streamEncoder(model: String) = "$model.encoder"
+    fun streamDecoder(model: String) = "$model.decoder"
+    fun streamJoiner(model: String) = "$model.joiner"
+    fun streamTokens(model: String) = "$model.tokens"
+
+    fun voiceModel(voice: String) = "$voice.model"
+    fun voiceTokens(voice: String) = "$voice.tokens"
+
+    const val ESPEAK_DATA = "espeak-ng-data"
 
     fun mtEncoder(pair: String) = "opus-mt-$pair.encoder"
     fun mtDecoder(pair: String) = "opus-mt-$pair.decoder"

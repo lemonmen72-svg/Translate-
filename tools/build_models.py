@@ -31,6 +31,35 @@ from pathlib import Path
 SHERPA = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
 OUT = Path("models_out")
 
+# Потоковые модели распознавания: дают текст по ходу речи, а не после её конца.
+# Это главный рычаг задержки — без них перевод не начинался, пока говорящий не
+# сделает паузу.
+#
+# Для английского и китайского берём вариант с пунктуацией: знаки препинания
+# прямо влияют на качество перевода, потому что по ним текст режется на
+# предложения, а модели перевода обучены на отдельных предложениях.
+STREAMING = {
+    "stream-zh-en-punct": (
+        "asr-models",
+        "sherpa-onnx-x-asr-160ms-streaming-zipformer-transducer-zh-en-punct-int8"
+        "-2026-06-05",
+    ),
+    # Японского и русского в потоковом виде с пунктуацией нет, поэтому берём
+    # многоязычную модель.
+    "stream-multi": (
+        "asr-models",
+        "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10",
+    ),
+}
+
+# Русские голоса Piper: заметно живее системного TTS Android.
+# Берём int8: 21 МБ против 67 МБ, на слух разница незначительна.
+VOICES = {
+    "piper-ru-irina": "vits-piper-ru_RU-irina-medium-int8",
+    "piper-ru-dmitri": "vits-piper-ru_RU-dmitri-medium-int8",
+    "piper-ru-ruslan": "vits-piper-ru_RU-ruslan-medium-int8",
+}
+
 # Whisper: нужны многоязычные модели, а не варианты .en.
 WHISPER = {
     "whisper-tiny": "sherpa-onnx-whisper-tiny",
@@ -111,6 +140,68 @@ def build_punct(work: Path) -> None:
     root = untar(archive, work / "punct")
     model = next(root.rglob("*.onnx"))
     emit(model, "punct-ct-transformer.onnx")
+
+
+def build_streaming(work: Path, only: str | None) -> None:
+    """Кладёт encoder/decoder/joiner/tokens потоковой модели."""
+    for key, (tag, base) in STREAMING.items():
+        if only and key != only:
+            continue
+        log(f"Потоковый ASR: {key} ({base})")
+        archive = fetch(f"{SHERPA}/{tag}/{base}.tar.bz2", work / f"{base}.tar.bz2")
+        root = untar(archive, work / key)
+        emit(pick(root, "encoder", "int8"), f"{key}-encoder.onnx")
+        emit(pick(root, "decoder", "int8"), f"{key}-decoder.onnx")
+        emit(pick(root, "joiner", "int8"), f"{key}-joiner.onnx")
+        emit(next(root.rglob("tokens.txt")), f"{key}-tokens.txt")
+        shutil.rmtree(root, ignore_errors=True)
+        archive.unlink(missing_ok=True)
+
+
+def build_voices(work: Path, only: str | None) -> None:
+    """Кладёт модель голоса, токены и общий каталог espeak-ng-data одним ZIP.
+
+    ZIP, а не tar.bz2: Android распаковывает zip штатным java.util.zip, а tar и
+    bzip2 не умеет. Каталог espeak-ng-data одинаков для всех голосов Piper,
+    поэтому кладём его один раз.
+    """
+    espeak_done = (OUT / "espeak-ng-data.zip").exists()
+    for key, base in VOICES.items():
+        if only and key != only:
+            continue
+        log(f"Голос: {key} ({base})")
+        archive = fetch(f"{SHERPA}/tts-models/{base}.tar.bz2", work / f"{base}.tar.bz2")
+        root = untar(archive, work / key)
+
+        # В архиве голоса один файл модели; tokens.txt и espeak-ng-data рядом.
+        candidates = sorted(root.rglob("*.onnx"))
+        if not candidates:
+            raise SystemExit(f"В архиве {base} нет .onnx")
+        emit(candidates[0], f"{key}-model.onnx")
+        emit(next(root.rglob("tokens.txt")), f"{key}-tokens.txt")
+
+        if not espeak_done:
+            data_dir = next(
+                (p for p in root.rglob("espeak-ng-data") if p.is_dir()), None
+            )
+            if data_dir is None:
+                log("  внимание: espeak-ng-data в архиве нет")
+            else:
+                zip_path = OUT / "espeak-ng-data.zip"
+                OUT.mkdir(parents=True, exist_ok=True)
+                # Архивируем содержимое каталога, а не сам каталог: на устройстве
+                # ожидается путь именно к espeak-ng-data.
+                shutil.make_archive(
+                    str(zip_path.with_suffix("")), "zip", root_dir=str(data_dir)
+                )
+                log(
+                    f"  → espeak-ng-data.zip  "
+                    f"{zip_path.stat().st_size / 1e6:.1f} MB"
+                )
+                espeak_done = True
+
+        shutil.rmtree(root, ignore_errors=True)
+        archive.unlink(missing_ok=True)
 
 
 def build_whisper(work: Path, only: str | None) -> None:
@@ -239,6 +330,15 @@ for _key in WHISPER:
     KEY_BY_FILE[f"{_key}-encoder.int8.onnx"] = f"{_key}.encoder"
     KEY_BY_FILE[f"{_key}-decoder.int8.onnx"] = f"{_key}.decoder"
     KEY_BY_FILE[f"{_key}-tokens.txt"] = f"{_key}.tokens"
+for _key in STREAMING:
+    KEY_BY_FILE[f"{_key}-encoder.onnx"] = f"{_key}.encoder"
+    KEY_BY_FILE[f"{_key}-decoder.onnx"] = f"{_key}.decoder"
+    KEY_BY_FILE[f"{_key}-joiner.onnx"] = f"{_key}.joiner"
+    KEY_BY_FILE[f"{_key}-tokens.txt"] = f"{_key}.tokens"
+for _voice in VOICES:
+    KEY_BY_FILE[f"{_voice}-model.onnx"] = f"{_voice}.model"
+    KEY_BY_FILE[f"{_voice}-tokens.txt"] = f"{_voice}.tokens"
+KEY_BY_FILE["espeak-ng-data.zip"] = "espeak-ng-data"
 for _pair in OPUS_PAIRS:
     KEY_BY_FILE[f"opus-mt-{_pair}-encoder.int8.onnx"] = f"opus-mt-{_pair}.encoder"
     KEY_BY_FILE[f"opus-mt-{_pair}-decoder.int8.onnx"] = f"opus-mt-{_pair}.decoder"
@@ -281,7 +381,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "target",
-        choices=["vad", "denoiser", "punct", "whisper", "opus", "manifest"],
+        choices=[
+            "vad", "denoiser", "punct", "whisper", "opus", "streaming", "voices",
+            "manifest",
+        ],
     )
     parser.add_argument("--only", help="конкретная модель или пара")
     parser.add_argument(
@@ -303,6 +406,10 @@ def main() -> None:
         build_whisper(work, args.only)
     elif args.target == "opus":
         build_opus(work, args.only)
+    elif args.target == "streaming":
+        build_streaming(work, args.only)
+    elif args.target == "voices":
+        build_voices(work, args.only)
     elif args.target == "manifest":
         existing = None
         if args.merge_manifest and Path(args.merge_manifest).is_file():

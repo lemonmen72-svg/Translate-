@@ -39,6 +39,42 @@ jobs:
           path: models_out/
           retention-days: 1
 
+  # Потоковые модели: главный рычаг задержки, дают текст по ходу речи.
+  streaming:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [stream-zh-en-punct, stream-multi]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Собрать ${{ matrix.model }}
+        run: |
+          python3 tools/build_models.py streaming --only ${{ matrix.model }}
+          rm -f models_out/manifest.json
+          ls -la models_out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models-${{ matrix.model }}
+          path: models_out/
+          retention-days: 1
+
+  # Русские голоса Piper плюс общий каталог espeak-ng-data одним ZIP.
+  voices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Собрать голоса
+        run: |
+          python3 tools/build_models.py voices
+          rm -f models_out/manifest.json
+          ls -la models_out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models-voices
+          path: models_out/
+          retention-days: 1
+
   whisper:
     runs-on: ubuntu-latest
     strategy:
@@ -92,7 +128,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [small-models, whisper, opus]
+    needs: [small-models, streaming, voices, whisper, opus]
     # Часть job может не собраться — релиз всё равно нужен из того, что есть.
     if: always()
     runs-on: ubuntu-latest

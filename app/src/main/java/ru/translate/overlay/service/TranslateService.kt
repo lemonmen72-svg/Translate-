@@ -173,6 +173,13 @@ class TranslateService : LifecycleService() {
             }
         }
         lifecycleScope.launch {
+            // Предварительная гипотеза распознавания: показывается до перевода,
+            // чтобы задержка была видна как работа, а не как зависание.
+            SessionState.partial.collect { text ->
+                overlay?.setPartial(text)
+            }
+        }
+        lifecycleScope.launch {
             SessionState.overlaySettingsVersion.collect {
                 overlay?.applySettings()
             }
