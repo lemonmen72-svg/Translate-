@@ -473,7 +473,15 @@ class Pipeline(
         val held = heldFragment.get() ?: return
         if (!force && System.currentTimeMillis() - held.atMs < HOLD_MAX_MS) return
         if (!heldFragment.compareAndSet(held, null)) return
-        val utterance = Utterance(held.text, System.currentTimeMillis(), 0, 0, held.speaker)
+        // Метка передаётся именованным аргументом: у обрывка звука уже нет, голос
+        // определён при его первом появлении.
+        val utterance = Utterance(
+            text = held.text,
+            endedAtMs = System.currentTimeMillis(),
+            asrMs = 0,
+            segmentDurationMs = 0,
+            speaker = held.speaker,
+        )
         emit(held.text, utterance, 0, held.speaker)
     }
 
