@@ -154,8 +154,12 @@ def beam_search(encoder, decoder, hidden, meta, beams: int) -> list[int]:
         for b, token_id, lp in candidates:
             if len(nxt) >= beams:
                 break
+            # pad запрещён к порождению, а не завершает гипотезу: у Marian он же
+            # стартовый токен декодера и стоит в bad_words_ids модели.
+            if token_id == meta["pad_token_id"]:
+                continue
             tokens = live[b][0] + [token_id]
-            if token_id in (meta["eos_token_id"], meta["pad_token_id"]):
+            if token_id == meta["eos_token_id"]:
                 done.append((tokens, lp))
             else:
                 nxt.append((tokens, lp))

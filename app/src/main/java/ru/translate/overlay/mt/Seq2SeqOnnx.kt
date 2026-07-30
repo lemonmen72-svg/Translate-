@@ -147,10 +147,20 @@ class Seq2SeqOnnx private constructor(
             val next = ArrayList<Hypothesis>(beams)
             for ((beamIndex, tokenId, logProb) in candidates) {
                 if (next.size >= beams) break
+
+                // pad-токен запрещён к порождению, а не завершает гипотезу.
+                // У Marian decoder_start_token_id совпадает с pad, и в
+                // generation_config модели pad стоит в bad_words_ids — эталон его
+                // подавляет и берёт следующий по вероятности токен. Прежний код
+                // считал pad концом перевода, из-за чего перевод мог обрываться
+                // на середине. На тестовых фразах это не срабатывало, но дефект
+                // настоящий: достаточно, чтобы pad один раз оказался в топе.
+                if (tokenId == meta.padId) continue
+
                 val tokens = ArrayList(live[beamIndex].tokens)
                 tokens.add(tokenId)
                 val hypothesis = Hypothesis(tokens, logProb, false)
-                if (tokenId == meta.eosId || tokenId == meta.padId) {
+                if (tokenId == meta.eosId) {
                     hypothesis.finished = true
                     done.add(hypothesis)
                 } else {
