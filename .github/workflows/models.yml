@@ -1,19 +1,16 @@
 name: Подготовка моделей
 
-# Запускается вручную: сборка тяжёлая (около гигабайта в сумме) и нужна редко —
-# только когда меняется состав моделей.
+# Сборка тяжёлая (около гигабайта в сумме) и нужна редко, поэтому не висит на
+# каждом push. Запускается двумя способами: вручную из вкладки Actions или
+# правкой файла models.trigger — второе нужно, чтобы запуск можно было сделать
+# без прав на workflow_dispatch через API.
 on:
   workflow_dispatch:
-    inputs:
-      whisper:
-        description: Какие модели Whisper собрать
-        type: choice
-        default: all
-        options: [all, whisper-tiny, whisper-base, whisper-small]
-      opus:
-        description: Собирать ли модели Opus-MT для режима точности
-        type: boolean
-        default: true
+  push:
+    paths:
+      - "models.trigger"
+      - "tools/build_models.py"
+      - ".github/workflows/models.yml"
 
 permissions:
   contents: write
@@ -38,8 +35,7 @@ jobs:
   whisper:
     runs-on: ubuntu-latest
     strategy:
-      # Модели независимы, но раннеры не бесконечны — по одной за раз.
-      max-parallel: 3
+      fail-fast: false
       matrix:
         model: [whisper-tiny, whisper-base, whisper-small]
     steps:
@@ -49,16 +45,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk || true
           df -h /
       - name: Собрать ${{ matrix.model }}
-        if: >-
-          github.event.inputs.whisper == 'all' ||
-          github.event.inputs.whisper == matrix.model
         run: |
           python3 tools/build_models.py whisper --only ${{ matrix.model }}
           rm -f models_out/manifest.json
+          ls -la models_out
       - uses: actions/upload-artifact@v4
-        if: >-
-          github.event.inputs.whisper == 'all' ||
-          github.event.inputs.whisper == matrix.model
         with:
           name: models-${{ matrix.model }}
           path: models_out/
@@ -66,12 +57,12 @@ jobs:
 
   opus:
     runs-on: ubuntu-latest
-    if: github.event.inputs.opus == 'true'
     strategy:
+      # Пары независимы: если какой-то модели не окажется на Hugging Face,
+      # остальные всё равно нужны.
+      fail-fast: false
       matrix:
         pair: [en-ru, ja-ru, zh-en]
-      # Одна пара может не найтись на Hugging Face — остальные всё равно нужны.
-      fail-fast: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -80,13 +71,13 @@ jobs:
       - name: Поставить optimum
         run: |
           python -m pip install --upgrade pip
-          pip install "optimum[onnxruntime]" transformers sentencepiece \
-                      torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install "optimum[onnxruntime]" transformers sentencepiece
       - name: Экспортировать ${{ matrix.pair }}
         run: |
           python3 tools/build_models.py opus --only ${{ matrix.pair }}
           rm -f models_out/manifest.json
+          ls -la models_out
       - uses: actions/upload-artifact@v4
         with:
           name: models-opus-${{ matrix.pair }}
@@ -95,7 +86,7 @@ jobs:
 
   release:
     needs: [small-models, whisper, opus]
-    # Пары Opus-MT могут не собраться целиком — релиз всё равно нужен.
+    # Часть job может не собраться — релиз всё равно нужен из того, что есть.
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -108,7 +99,8 @@ jobs:
       - name: Собрать каталог выдачи и манифест
         run: |
           mkdir -p models_out
-          cp -v downloaded/* models_out/ 2>/dev/null || true
+          find downloaded -type f -exec cp -v {} models_out/ \;
+          rm -f models_out/manifest.json
           ls -la models_out
           python3 tools/build_models.py manifest
           cat models_out/manifest.json
