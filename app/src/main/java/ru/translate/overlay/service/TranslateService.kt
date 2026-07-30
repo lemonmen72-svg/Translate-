@@ -170,7 +170,7 @@ class TranslateService : LifecycleService() {
         lifecycleScope.launch {
             SessionState.current.collect { phrase ->
                 phrase ?: return@collect
-                overlay?.setPhrase(phrase.translatedText, phrase.sourceText)
+                overlay?.setPhrase(phrase.translatedText, phrase.sourceText, phrase.speaker)
             }
         }
         lifecycleScope.launch {

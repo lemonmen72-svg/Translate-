@@ -24,6 +24,8 @@ import ru.translate.overlay.mt.NoOpTranslator
 import ru.translate.overlay.mt.OpusMtTranslator
 import ru.translate.overlay.mt.TextSplitter
 import ru.translate.overlay.mt.Translator
+import ru.translate.overlay.speaker.RecentAudio
+import ru.translate.overlay.speaker.SpeakerTagger
 import ru.translate.overlay.tts.PiperSpeaker
 import ru.translate.overlay.tts.PiperTts
 import ru.translate.overlay.tts.RussianTts
@@ -68,6 +70,8 @@ class Pipeline(
         val endedAtMs: Long,
         val asrMs: Long,
         val segmentDurationMs: Long,
+        /** Метка говорящего, если различение голосов включено и сработало. */
+        val speaker: String? = null,
     )
 
     /**
@@ -90,9 +94,17 @@ class Pipeline(
     private var punctuator: Punctuator? = null
     private var speaker: Speaker? = null
     private var speech: SpeechQueue? = null
+    private var tagger: SpeakerTagger? = null
+
+    /**
+     * Буфер звука текущей реплики. Нужен только для различения голосов: сам
+     * распознаватель звук не сохраняет, а эмбеддинг считается уже после конца
+     * реплики.
+     */
+    private var recentAudio: RecentAudio? = null
 
     /** Обрывок фразы, ждущий продолжения, и момент, когда он пришёл. */
-    private class Held(val text: String, val atMs: Long)
+    private class Held(val text: String, val atMs: Long, val speaker: String?)
 
     private val heldFragment = AtomicReference<Held?>(null)
 
@@ -150,6 +162,8 @@ class Pipeline(
             // проблема, из-за которой перевод «не начинался».
             if (settings.muteWhileSpeaking && speaker?.isSpeaking == true) return@collect
 
+            recentAudio?.append(frame)
+
             val started = System.nanoTime()
             val update = asr.push(frame)
             val elapsed = (System.nanoTime() - started) / 1_000_000
@@ -180,6 +194,7 @@ class Pipeline(
                                 endedAtMs = System.currentTimeMillis(),
                                 asrMs = elapsed,
                                 segmentDurationMs = 0,
+                                speaker = identifySpeaker(),
                             )
                         )
                     }
@@ -215,6 +230,9 @@ class Pipeline(
                         endedAtMs = segment.endedAtMs,
                         asrMs = result.elapsedMs,
                         segmentDurationMs = segment.durationMs,
+                        speaker = tagger?.let { t ->
+                            withContext(Dispatchers.Default) { t.identify(segment.samples) }
+                        },
                     )
                 )
             }
@@ -232,6 +250,24 @@ class Pipeline(
         if (!tail.isNullOrBlank()) {
             offer(Utterance(tail, System.currentTimeMillis(), 0, 0))
         }
+    }
+
+    /**
+     * Метка говорящего по звуку последней реплики.
+     *
+     * Буфер вычитывается всегда, даже когда различение выключено: иначе в него
+     * копился бы звук всей сессии и в эмбеддинг следующей реплики попал бы хвост
+     * предыдущей.
+     */
+    private suspend fun identifySpeaker(): String? {
+        val samples = recentAudio?.drain() ?: return null
+        val t = tagger ?: return null
+        if (samples.isEmpty()) return null
+        val label = withContext(Dispatchers.Default) {
+            runCatching { t.identify(samples) }.getOrNull()
+        }
+        SessionState.setSpeakerCount(t.count())
+        return label
     }
 
     private suspend fun maybeDenoise(samples: FloatArray): FloatArray {
@@ -285,7 +321,18 @@ class Pipeline(
         }
 
         if (settings.mergeFragments) {
-            val merged = mergeWithHeld(sourceText)
+            // Обрывок и продолжение от разных людей склеивать нельзя: получится
+            // фраза, которой никто не говорил. Поэтому при смене голоса обрывок
+            // сначала выводится сам — иначе он вышел бы после новой реплики и
+            // субтитры пошли бы в обратном порядке.
+            val waiting = heldFragment.get()
+            if (waiting?.speaker != null && utterance.speaker != null &&
+                waiting.speaker != utterance.speaker
+            ) {
+                flushHeld(force = true)
+            }
+
+            val merged = mergeWithHeld(sourceText, utterance.speaker)
             if (merged == null) {
                 SessionState.setStage(Stage.Listening)
                 return
@@ -293,11 +340,16 @@ class Pipeline(
             sourceText = merged
         }
 
-        emit(sourceText, utterance, punctuationMs)
+        emit(sourceText, utterance, punctuationMs, utterance.speaker)
     }
 
     /** Перевод по предложениям и вывод: общий хвост для обычной реплики и обрывка. */
-    private suspend fun emit(sourceText: String, utterance: Utterance, punctuationMs: Long) {
+    private suspend fun emit(
+        sourceText: String,
+        utterance: Utterance,
+        punctuationMs: Long,
+        speakerLabel: String?,
+    ) {
         val needsMt = settings.sourceLang.needsTranslation
         if (needsMt) SessionState.setStage(Stage.Translating)
 
@@ -320,6 +372,7 @@ class Pipeline(
                     punctuationMs = if (index == 0) punctuationMs else 0,
                     mtMs = mt?.elapsedMs ?: 0,
                 ),
+                speaker = speakerLabel,
             )
             SessionState.publish(phrase)
 
@@ -346,7 +399,7 @@ class Pipeline(
      * диалоге продолжения не будет, и текст пропал бы совсем. Возвращает готовый к
      * переводу текст либо null, если решено ждать.
      */
-    private fun mergeWithHeld(text: String): String? {
+    private fun mergeWithHeld(text: String, speakerLabel: String?): String? {
         val held = heldFragment.getAndSet(null)
         val combined = if (held == null) text.trim() else "${held.text} ${text.trim()}".trim()
         val startedAtMs = held?.atMs ?: System.currentTimeMillis()
@@ -357,7 +410,7 @@ class Pipeline(
         if (finished || combined.length >= FRAGMENT_MAX_LEN || waitedMs >= HOLD_MAX_MS) {
             return combined
         }
-        heldFragment.set(Held(combined, startedAtMs))
+        heldFragment.set(Held(combined, startedAtMs, held?.speaker ?: speakerLabel))
         return null
     }
 
@@ -366,7 +419,8 @@ class Pipeline(
         val held = heldFragment.get() ?: return
         if (!force && System.currentTimeMillis() - held.atMs < HOLD_MAX_MS) return
         if (!heldFragment.compareAndSet(held, null)) return
-        emit(held.text, Utterance(held.text, System.currentTimeMillis(), 0, 0), 0)
+        val utterance = Utterance(held.text, System.currentTimeMillis(), 0, 0, held.speaker)
+        emit(held.text, utterance, 0, held.speaker)
     }
 
     private suspend fun prepare(lang: SourceLang, profile: Profile) {
@@ -445,12 +499,30 @@ class Pipeline(
             }.onFailure { Log.w(TAG, "Пунктуация не поднялась", it) }.getOrNull()
         }
 
+        // Различение голосов. Модель отдельная и необязательная: не поднялась —
+        // субтитры просто идут без меток.
+        if (settings.speakerLabels) {
+            recentAudio = RecentAudio()
+            tagger = runCatching {
+                val entry = store.resolve(listOf(ModelKeys.SPEAKER_MODEL))
+                store.ensure(entry, progress)
+                SpeakerTagger(
+                    modelPath = store.localPath(entry.first()),
+                    numThreads = 1,
+                )
+            }.onFailure { Log.w(TAG, "Различение голосов не поднялось", it) }.getOrNull()
+            if (tagger == null) recentAudio = null
+        }
+
         translator = createTranslator(lang, store, progress)
         translator?.prepare(progress)
 
         if (settings.tts) {
             speaker = createSpeaker(store, progress)
             if (speaker == null) Log.w(TAG, "Озвучка недоступна")
+            SessionState.setVoiceEngine(speaker?.name ?: "не поднялась")
+        } else {
+            SessionState.setVoiceEngine("выключена в настройках")
         }
     }
 
@@ -516,6 +588,7 @@ class Pipeline(
         runCatching { punctuator?.release() }
         runCatching { translator?.release() }
         runCatching { speaker?.release() }
+        runCatching { tagger?.release() }
         streaming = null
         vad = null
         offlineAsr = null
@@ -524,6 +597,8 @@ class Pipeline(
         translator = null
         speaker = null
         speech = null
+        tagger = null
+        recentAudio = null
         pending.set(null)
         heldFragment.set(null)
     }

@@ -260,6 +260,9 @@ object ModelKeys {
     const val GTCRN = "gtcrn"
     const val PUNCT_MODEL = "punct_model"
 
+    /** Модель эмбеддингов голоса: обучена сразу на китайском и английском. */
+    const val SPEAKER_MODEL = "speaker_campplus_zh_en"
+
     fun whisperEncoder(model: String) = "$model.encoder"
     fun whisperDecoder(model: String) = "$model.decoder"
     fun whisperTokens(model: String) = "$model.tokens"

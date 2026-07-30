@@ -50,6 +50,11 @@ data class Phrase(
     val sourceText: String,
     val translatedText: String,
     val timings: Timings,
+    /**
+     * Метка говорящего вида «Голос 2», или null, если определить не удалось:
+     * реплика короткая, модель не поднялась или различение выключено.
+     */
+    val speaker: String? = null,
 )
 
 /** Замеры по стадиям, миллисекунды. Без них бюджет задержки настраивать нечем. */
@@ -94,6 +99,16 @@ object SessionState {
     /** Сколько сегментов отброшено за сессию: галлюцинации плюс back-pressure. */
     val skipped: StateFlow<Int> = _skipped.asStateFlow()
 
+    /**
+     * Что реально поднялось для озвучки: «Ирина (Piper)», «системный TTS» или
+     * «не поднялась». Без этого «звука нет» неотличимо от «звук есть, но тихий», и
+     * причину искать негде.
+     */
+    private val _voiceEngine = MutableStateFlow("")
+
+    /** Сколько разных голосов уже различил распознаватель говорящих. */
+    private val _speakerCount = MutableStateFlow(0)
+
     private val _speechLag = MutableStateFlow(0)
 
     /**
@@ -101,6 +116,8 @@ object SessionState {
      * отстаёт от видео, и лучше видеть насколько, чем догадываться.
      */
     val speechLag: StateFlow<Int> = _speechLag.asStateFlow()
+    val voiceEngine: StateFlow<String> = _voiceEngine.asStateFlow()
+    val speakerCount: StateFlow<Int> = _speakerCount.asStateFlow()
 
     private val _partial = MutableStateFlow("")
 
@@ -133,6 +150,14 @@ object SessionState {
         _history.update { (it + phrase).takeLast(MAX_HISTORY) }
     }
 
+    fun setVoiceEngine(what: String) {
+        _voiceEngine.value = what
+    }
+
+    fun setSpeakerCount(count: Int) {
+        _speakerCount.value = count.coerceAtLeast(0)
+    }
+
     fun setSpeechLag(count: Int) {
         _speechLag.value = count.coerceAtLeast(0)
     }
@@ -159,6 +184,8 @@ object SessionState {
         _current.value = null
         _partial.value = ""
         _speechLag.value = 0
+        _voiceEngine.value = ""
+        _speakerCount.value = 0
         _skipped.value = 0
         _dropped.value = 0
     }

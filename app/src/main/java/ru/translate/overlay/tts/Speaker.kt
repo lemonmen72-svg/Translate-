@@ -19,6 +19,14 @@ interface Speaker {
     val isSpeaking: Boolean
 
     /**
+     * Что это за движок — показывается в интерфейсе.
+     *
+     * Нужно потому, что при жалобе «звука нет» иначе не отличить неподнявшийся
+     * Piper от молчащего системного TTS, а от этого зависит, где искать причину.
+     */
+    val name: String
+
+    /**
      * Проигрывает текст и возвращает управление, когда он дочитан.
      *
      * [speed] — множитель скорости речи. Очередь поднимает его, когда отстаёт от
@@ -35,6 +43,7 @@ interface Speaker {
 /** Обёртка над голосом Piper. */
 class PiperSpeaker(private val tts: PiperTts) : Speaker {
     override val isSpeaking: Boolean get() = tts.speaking.get()
+    override val name: String get() = "Piper"
 
     override suspend fun speakAndWait(text: String, speed: Float) =
         tts.speakAndWait(text, speed)
@@ -46,6 +55,7 @@ class PiperSpeaker(private val tts: PiperTts) : Speaker {
 /** Обёртка над системным TTS. */
 class SystemSpeaker(private val tts: RussianTts) : Speaker {
     override val isSpeaking: Boolean get() = tts.speaking.get()
+    override val name: String get() = "системный TTS"
 
     override suspend fun speakAndWait(text: String, speed: Float) =
         tts.speakAndWait(text, speed)

@@ -150,6 +150,24 @@ def build_punct(work: Path) -> None:
     emit(model, "punct-ct-transformer.onnx")
 
 
+def build_speaker(work: Path) -> None:
+    """Модель эмбеддингов голоса: по ней определяется, кто говорит.
+
+    Выбрана campplus, обученная сразу на китайском и английском: у нас исходные
+    языки ru/en/zh/ja, а вариантов, покрывающих сразу два наших основных, больше
+    нет. 28 МБ — самый маленький из адекватных, дальше идут 40 и 100 МБ без
+    заметной пользы для задачи «различить два-три голоса в ролике».
+
+    Раздаётся отдельным .onnx, без архива — распаковывать нечего.
+    """
+    log("Эмбеддинги голоса")
+    name = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+    emit(
+        fetch(f"{SHERPA}/speaker-recongition-models/{name}", work / name),
+        "speaker-campplus-zh-en.onnx",
+    )
+
+
 def build_streaming(work: Path, only: str | None) -> None:
     """Кладёт encoder/decoder/joiner/tokens потоковой модели."""
     for key, (tag, base) in STREAMING.items():
@@ -333,6 +351,7 @@ KEY_BY_FILE = {
     "silero_vad.onnx": "silero_vad",
     "gtcrn_simple.onnx": "gtcrn",
     "punct-ct-transformer.onnx": "punct_model",
+    "speaker-campplus-zh-en.onnx": "speaker_campplus_zh_en",
 }
 for _key in WHISPER:
     KEY_BY_FILE[f"{_key}-encoder.int8.onnx"] = f"{_key}.encoder"
@@ -391,7 +410,7 @@ def main() -> None:
         "target",
         choices=[
             "vad", "denoiser", "punct", "whisper", "opus", "streaming", "voices",
-            "manifest",
+            "speaker", "manifest",
         ],
     )
     parser.add_argument("--only", help="конкретная модель или пара")
@@ -418,6 +437,8 @@ def main() -> None:
         build_streaming(work, args.only)
     elif args.target == "voices":
         build_voices(work, args.only)
+    elif args.target == "speaker":
+        build_speaker(work)
     elif args.target == "manifest":
         existing = None
         if args.merge_manifest and Path(args.merge_manifest).is_file():

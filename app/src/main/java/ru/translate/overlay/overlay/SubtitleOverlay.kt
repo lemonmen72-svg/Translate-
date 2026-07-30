@@ -36,10 +36,17 @@ class SubtitleOverlay(
 
     private var root: LinearLayout? = null
     private var statusView: TextView? = null
+    private var previousView: TextView? = null
     private var translationView: TextView? = null
     private var sourceView: TextView? = null
     private var partialView: TextView? = null
     private var collapsed = false
+
+    /** Текст предыдущей фразы: нужен, чтобы сдвинуть его в тусклую строку. */
+    private var lastTranslation: String? = null
+
+    /** Метка говорящего у текущей фразы, чтобы не перекрашивать зря. */
+    private var lastSpeaker: String? = null
 
     /**
      * Ширина по содержимому, а не MATCH_PARENT: при MATCH_PARENT горизонтальное
@@ -85,6 +92,18 @@ class SubtitleOverlay(
 
         val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.9f).toInt()
 
+        // Предыдущая фраза тусклой строкой над текущей. Субтитры теперь главный
+        // вывод приложения, а одна строка живёт всего пару секунд: отвёл взгляд —
+        // фраза уже сменилась и вернуться к ней некуда.
+        val previous = TextView(context).apply {
+            setTextColor(Color.parseColor("#8A93A5"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 3f)
+            maxWidth = maxTextWidth
+            maxLines = 2
+            visibility = View.GONE
+            text = ""
+        }
+
         val translation = TextView(context).apply {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp)
@@ -111,6 +130,7 @@ class SubtitleOverlay(
         }
 
         container.addView(status)
+        container.addView(previous)
         container.addView(translation)
         container.addView(sourceText)
         container.addView(partial)
@@ -119,6 +139,7 @@ class SubtitleOverlay(
         windowManager.addView(container, layoutParams)
         root = container
         statusView = status
+        previousView = previous
         translationView = translation
         sourceView = sourceText
         partialView = partial
@@ -182,6 +203,11 @@ class SubtitleOverlay(
                         collapsed = !collapsed
                         val vis = if (collapsed) View.GONE else View.VISIBLE
                         translation.visibility = vis
+                        previousView?.visibility = when {
+                            collapsed -> View.GONE
+                            previousView?.text.isNullOrBlank() -> View.GONE
+                            else -> View.VISIBLE
+                        }
                         sourceText.visibility = when {
                             collapsed -> View.GONE
                             settings.showSourceText -> View.VISIBLE
@@ -200,9 +226,38 @@ class SubtitleOverlay(
         statusView?.text = text
     }
 
-    fun setPhrase(translated: String, source: String) {
-        translationView?.text = translated
+    /**
+     * Показывает готовую фразу.
+     *
+     * Метка говорящего выводится перед текстом и красит его: в диалоге две
+     * реплики подряд иначе читаются как одна мысль одного человека. Цвет берётся
+     * по номеру голоса, поэтому за репликой можно следить глазами, не вчитываясь
+     * в метку.
+     */
+    fun setPhrase(translated: String, source: String, speaker: String? = null) {
+        val previous = lastTranslation
+        if (!previous.isNullOrBlank()) {
+            previousView?.text = previous
+            previousView?.visibility = if (collapsed) View.GONE else View.VISIBLE
+        }
+        lastTranslation = translated
+        lastSpeaker = speaker
+
+        translationView?.apply {
+            text = if (speaker == null) translated else "$speaker: $translated"
+            setTextColor(colorFor(speaker))
+        }
         sourceView?.text = source
+    }
+
+    /**
+     * Цвет по метке голоса. Палитра подобрана так, чтобы все цвета читались на
+     * тёмном фоне оверлея и различались между собой, а не только по оттенку.
+     */
+    private fun colorFor(speaker: String?): Int {
+        if (speaker == null) return Color.WHITE
+        val index = speaker.filter { it.isDigit() }.toIntOrNull() ?: return Color.WHITE
+        return SPEAKER_COLORS[(index - 1).coerceAtLeast(0) % SPEAKER_COLORS.size]
     }
 
     /**
@@ -220,6 +275,7 @@ class SubtitleOverlay(
     fun applySettings() {
         (root?.background as? GradientDrawable)?.setColor(backgroundColor())
         translationView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp)
+        previousView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 3f)
         sourceView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 3f)
         sourceView?.visibility = when {
             collapsed -> View.GONE
@@ -233,6 +289,7 @@ class SubtitleOverlay(
         runCatching { windowManager.removeView(view) }
         root = null
         statusView = null
+        previousView = null
         translationView = null
         sourceView = null
         partialView = null
@@ -249,5 +306,17 @@ class SubtitleOverlay(
     private companion object {
         const val TAP_SLOP = 12
         const val MIN_VISIBLE_DP = 48
+
+        /** Цвета голосов по порядку появления. */
+        val SPEAKER_COLORS = intArrayOf(
+            0xFFFFFFFF.toInt(), // Голос 1 — белый, самый частый случай
+            0xFF9BD1FF.toInt(), // голубой
+            0xFFFFD08A.toInt(), // тёплый жёлтый
+            0xFFB8F1B0.toInt(), // зелёный
+            0xFFFFB3C7.toInt(), // розовый
+            0xFFD3BBFF.toInt(), // сиреневый
+            0xFF9FE8E0.toInt(), // бирюзовый
+            0xFFE8D9A0.toInt(), // песочный
+        )
     }
 }

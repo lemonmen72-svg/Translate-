@@ -75,6 +75,23 @@ jobs:
           path: models_out/
           retention-days: 1
 
+  # Модель эмбеддингов голоса: по ней определяется, кто говорит. Один .onnx на
+  # 28 МБ, раздаётся без архива.
+  speaker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Собрать модель голосов
+        run: |
+          python3 tools/build_models.py speaker
+          rm -f models_out/manifest.json
+          ls -la models_out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models-speaker
+          path: models_out/
+          retention-days: 1
+
   whisper:
     runs-on: ubuntu-latest
     strategy:
@@ -128,7 +145,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [small-models, streaming, voices, whisper, opus]
+    needs: [small-models, streaming, voices, speaker, whisper, opus]
     # Часть job может не собраться — релиз всё равно нужен из того, что есть.
     if: always()
     runs-on: ubuntu-latest

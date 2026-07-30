@@ -88,6 +88,7 @@ private fun MainScreen(modifier: Modifier = Modifier) {
     var punctuation by remember { mutableStateOf(settings.punctuation) }
     var tts by remember { mutableStateOf(settings.tts) }
     var mergeFragments by remember { mutableStateOf(settings.mergeFragments) }
+    var speakerLabels by remember { mutableStateOf(settings.speakerLabels) }
     var showSource by remember { mutableStateOf(settings.showSourceText) }
     var thermalThrottle by remember { mutableStateOf(settings.thermalThrottle) }
     var fontSp by remember { mutableStateOf(settings.overlayFontSp) }
@@ -106,6 +107,8 @@ private fun MainScreen(modifier: Modifier = Modifier) {
     val loadPercent by LoadProgress.percent.collectAsState()
     val partial by SessionState.partial.collectAsState()
     val speechLag by SessionState.speechLag.collectAsState()
+    val voiceEngine by SessionState.voiceEngine.collectAsState()
+    val speakerCount by SessionState.speakerCount.collectAsState()
 
     val running = stage !is Stage.Idle && stage !is Stage.Error
 
@@ -153,6 +156,12 @@ private fun MainScreen(modifier: Modifier = Modifier) {
             }
             if (partial.isNotBlank()) {
                 Text("Слышу: $partial", fontSize = 12.sp)
+            }
+            if (voiceEngine.isNotEmpty()) {
+                Text("Озвучка: $voiceEngine", fontSize = 12.sp)
+            }
+            if (speakerCount > 0) {
+                Text("Различено голосов: $speakerCount", fontSize = 12.sp)
             }
             if (speechLag > 0) {
                 Text("Озвучка отстаёт на $speechLag фраз", fontSize = 12.sp)
@@ -335,9 +344,18 @@ private fun MainScreen(modifier: Modifier = Modifier) {
         item {
             SectionTitle("Дополнительно")
             CheckRow(
+                "Различать голоса",
+                speakerLabels,
+                "Помечает реплики «Голос 1», «Голос 2» и красит их по говорящему. " +
+                    "Модель 28 МБ. Короткие реплики остаются без метки: на них " +
+                    "определение ненадёжно.",
+            ) { speakerLabels = it; settings.speakerLabels = it }
+
+            CheckRow(
                 "Склеивать обрывки фраз",
                 mergeFragments,
-                "Даёт переводчику контекст, но обрывок ждёт продолжения — задержка растёт.",
+                "Обрывок без подлежащего переводится с потерей рода. Склейка это " +
+                    "лечит, ожидание продолжения ограничено 1,2 с.",
             ) { mergeFragments = it; settings.mergeFragments = it }
 
             CheckRow(

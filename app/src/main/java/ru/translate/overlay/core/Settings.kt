@@ -116,6 +116,18 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_MERGE, true)
         set(value) = prefs.edit().putBoolean(KEY_MERGE, value).apply()
 
+    /**
+     * Различать голоса и помечать реплики в субтитрах.
+     *
+     * В диалоге без меток две реплики подряд читаются как одна мысль одного
+     * человека, хотя это вопрос и ответ. Цена — 28 МБ модели и эмбеддинг на
+     * каждую реплику; включено по умолчанию, потому что пользователь просил
+     * именно это.
+     */
+    var speakerLabels: Boolean
+        get() = prefs.getBoolean(KEY_SPEAKERS, true)
+        set(value) = prefs.edit().putBoolean(KEY_SPEAKERS, value).apply()
+
     /** Прозрачность фона оверлея, 0..1. */
     var overlayOpacity: Float
         get() = prefs.getFloat(KEY_OPACITY, 0.65f)
@@ -164,6 +176,7 @@ class Settings(context: Context) {
         const val KEY_SPEECH_SPEED = "speech_speed"
         const val KEY_SPEECH_QUEUE = "speech_queue_depth"
         const val KEY_CHUNK = "chunk_size"
+        const val KEY_SPEAKERS = "speaker_labels"
         const val KEY_OPACITY = "overlay_opacity"
         const val KEY_FONT = "overlay_font_sp"
         const val KEY_SHOW_SOURCE = "show_source_text"
