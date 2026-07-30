@@ -93,9 +93,10 @@ enum class AsrModel(
     /** Примерный размер обеих частей вместе, для показа перед загрузкой. */
     val approxMb: Int,
 ) {
-    WHISPER_TINY("whisper-tiny", "Whisper tiny (int8)", 75),
-    WHISPER_BASE("whisper-base", "Whisper base (int8)", 145),
-    WHISPER_SMALL("whisper-small", "Whisper small (int8)", 490),
+    // Размеры — фактические по манифесту релиза моделей, а не оценочные.
+    WHISPER_TINY("whisper-tiny", "Whisper tiny (int8)", 104),
+    WHISPER_BASE("whisper-base", "Whisper base (int8)", 161),
+    WHISPER_SMALL("whisper-small", "Whisper small (int8)", 376),
 }
 
 /** Бэкенд машинного перевода. */
