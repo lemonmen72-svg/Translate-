@@ -13,6 +13,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import ru.translate.overlay.App
@@ -134,7 +135,9 @@ class TranslateService : LifecycleService() {
 
         val runner = Pipeline(applicationContext, settings, thermal)
         pipeline = runner
-        sessionJob = lifecycleScope.launch {
+        // Строго не Main: сбор кадров дёргает VAD через JNI около 31 раза в
+        // секунду, в главном потоке это ANR.
+        sessionJob = lifecycleScope.launch(Dispatchers.Default) {
             try {
                 runner.run(mediaProjection, this)
             } catch (t: Throwable) {
