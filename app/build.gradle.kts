@@ -60,6 +60,11 @@ android {
         }
         jniLibs {
             useLegacyPackaging = false
+            // x86 нужен только эмулятору, а в AAR sherpa-onnx под эту
+            // архитектуру всё ещё лежит свой libonnxruntime.so, который
+            // конфликтует с библиотекой из onnxruntime-android. Под arm
+            // конфликта нет: там onnxruntime слинкован статически.
+            excludes += setOf("lib/x86/**", "lib/x86_64/**")
         }
     }
 
