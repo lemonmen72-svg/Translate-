@@ -25,8 +25,18 @@ def request(url: str):
     return req
 
 
+# Нужен именно вариант со статически слинкованным onnxruntime.
+#
+# Обычный sherpa-onnx-<ver>.aar кладёт в jniLibs собственный
+# libonnxruntime.so, а он же приходит из Maven-зависимости
+# com.microsoft.onnxruntime:onnxruntime-android, которая нужна для бэкенда
+# перевода на Opus-MT. AGP падает с DuplicateRelativeFileException. В
+# static-link варианте отдельного libonnxruntime.so нет, конфликта не возникает.
+PREFIX = "sherpa-onnx-static-link-onnxruntime-"
+
+
 def find_aar() -> tuple[str, str]:
-    """Возвращает (имя, url) самого свежего AAR по версии в имени файла."""
+    """Возвращает (имя, url) самого свежего подходящего AAR."""
     best = None
     for page in (1, 2, 3):
         url = f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}"
@@ -37,7 +47,7 @@ def find_aar() -> tuple[str, str]:
         for rel in releases:
             for asset in rel.get("assets", []):
                 name = asset["name"]
-                if not name.endswith(".aar"):
+                if not name.startswith(PREFIX) or not name.endswith(".aar"):
                     continue
                 m = re.search(r"(\d+)\.(\d+)\.(\d+)", name)
                 version = tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
@@ -49,7 +59,7 @@ def find_aar() -> tuple[str, str]:
             break
     if best is None:
         sys.exit(
-            f"AAR sherpa-onnx не найден в релизах {REPO}. "
+            f"AAR «{PREFIX}*.aar» не найден в релизах {REPO}. "
             f"Положите AAR в {DEST} вручную."
         )
     return best[2], best[3]

@@ -87,6 +87,8 @@ dependencies {
 
     // Бэкенд перевода по умолчанию: быстрый, офлайн после первой загрузки моделей.
     implementation(libs.mlkit.translate)
+    // Task<T> нужен явно: на нём построен мост ML Kit в корутины.
+    implementation(libs.play.services.tasks)
 
     // Бэкенд перевода «максимальное качество»: Opus-MT в ONNX.
     implementation(libs.onnxruntime.android)

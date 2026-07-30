@@ -1,19 +1,379 @@
 package ru.translate.overlay.ui
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import ru.translate.overlay.core.DenoiseMode
+import ru.translate.overlay.core.LoadProgress
+import ru.translate.overlay.core.MtBackend
+import ru.translate.overlay.core.Profile
+import ru.translate.overlay.core.SessionState
+import ru.translate.overlay.core.Settings
+import ru.translate.overlay.core.SourceLang
+import ru.translate.overlay.core.Stage
+import ru.translate.overlay.models.ModelStore
+import ru.translate.overlay.service.TranslateService
 
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Text("Переводчик поверх")
+                Scaffold { padding ->
+                    MainScreen(Modifier.padding(padding))
+                }
             }
         }
     }
 }
+
+@Composable
+private fun MainScreen(modifier: Modifier = Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settings = remember { Settings(context) }
+    val store = remember { ModelStore(context) }
+
+    // Настройки читаются синхронно, поэтому держим их копию в состоянии Compose.
+    var sourceLang by remember { mutableStateOf(settings.sourceLang) }
+    var profile by remember { mutableStateOf(settings.profile) }
+    var mtBackend by remember { mutableStateOf(settings.mtBackend) }
+    var denoise by remember { mutableStateOf(settings.denoise) }
+    var punctuation by remember { mutableStateOf(settings.punctuation) }
+    var tts by remember { mutableStateOf(settings.tts) }
+    var mergeFragments by remember { mutableStateOf(settings.mergeFragments) }
+    var showSource by remember { mutableStateOf(settings.showSourceText) }
+    var thermalThrottle by remember { mutableStateOf(settings.thermalThrottle) }
+    var fontSp by remember { mutableStateOf(settings.overlayFontSp) }
+    var opacity by remember { mutableStateOf(settings.overlayOpacity) }
+
+    val stage by SessionState.stage.collectAsState()
+    val history by SessionState.history.collectAsState()
+    val skipped by SessionState.skipped.collectAsState()
+    val dropped by SessionState.dropped.collectAsState()
+    val loadText by LoadProgress.text.collectAsState()
+    val loadPercent by LoadProgress.percent.collectAsState()
+
+    val running = stage !is Stage.Idle && stage !is Stage.Error
+
+    // Порядок обязателен: сначала согласие на захват, только потом сервис.
+    val captureLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        if (result.resultCode != 0 && data != null) {
+            TranslateService.start(context, result.resultCode, data)
+        }
+    }
+
+    val notificationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Переводчик поверх",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                stage.label,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            if (loadText.isNotEmpty() && stage is Stage.Loading) {
+                Text("$loadText — $loadPercent%", fontSize = 12.sp)
+            }
+            if (skipped > 0) {
+                Text(
+                    "Пропущено фраз: $skipped, из них по отставанию: $dropped",
+                    fontSize = 12.sp,
+                )
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    enabled = !running,
+                    onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        if (!canDrawOverlays(context)) {
+                            context.startActivity(overlayPermissionIntent(context))
+                            return@Button
+                        }
+                        val manager = context.getSystemService(
+                            Context.MEDIA_PROJECTION_SERVICE
+                        ) as MediaProjectionManager
+                        captureLauncher.launch(manager.createScreenCaptureIntent())
+                    },
+                ) { Text("Запустить сессию") }
+
+                OutlinedButton(
+                    enabled = running,
+                    onClick = { TranslateService.stop(context) },
+                ) { Text("Остановить") }
+            }
+            if (!canDrawOverlays(context)) {
+                Text(
+                    "Нужно разрешение «Поверх других приложений» — кнопка откроет настройки.",
+                    fontSize = 12.sp,
+                )
+            }
+        }
+
+        item { HorizontalDivider() }
+
+        item {
+            SectionTitle("Исходный язык")
+            Text(
+                "Автоопределения нет: язык выбирается заранее, это убирает один шаг из пайплайна.",
+                fontSize = 12.sp,
+            )
+            ChipRow(
+                options = SourceLang.entries,
+                selected = sourceLang,
+                label = { it.title },
+                onSelect = { sourceLang = it; settings.sourceLang = it },
+            )
+            if (sourceLang == SourceLang.RU) {
+                Text(
+                    "Для русского перевод не нужен: будет просто транскрипция. " +
+                        "Модель перевода не загружается.",
+                    fontSize = 12.sp,
+                )
+            }
+        }
+
+        item {
+            SectionTitle("Скорость или качество")
+            ChipRow(
+                options = Profile.entries,
+                selected = profile,
+                label = { it.title },
+                onSelect = { profile = it; settings.profile = it },
+            )
+            Text(profile.subtitle, fontSize = 12.sp)
+            Text(
+                "Модель ASR: ${profile.asrModel.title}, около ${profile.asrModel.approxMb} МБ.",
+                fontSize = 12.sp,
+            )
+        }
+
+        if (sourceLang != SourceLang.RU) {
+            item {
+                SectionTitle("Бэкенд перевода")
+                ChipRow(
+                    options = MtBackend.entries,
+                    selected = mtBackend,
+                    label = { it.title },
+                    onSelect = { mtBackend = it; settings.mtBackend = it },
+                )
+                Text(mtBackend.subtitle, fontSize = 12.sp)
+                if (mtBackend == MtBackend.OPUS_MT && sourceLang == SourceLang.ZH) {
+                    Text(
+                        "Для китайского прямой модели нет, перевод идёт zh→en→ru. " +
+                            "Смысл может теряться на посреднике.",
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionTitle("Оверлей")
+            Text("Размер шрифта: ${fontSp.toInt()} sp", fontSize = 12.sp)
+            Slider(
+                value = fontSp,
+                valueRange = 12f..30f,
+                onValueChange = { fontSp = it; settings.overlayFontSp = it },
+            )
+            Text("Плотность фона: ${(opacity * 100).toInt()}%", fontSize = 12.sp)
+            Slider(
+                value = opacity,
+                valueRange = 0f..1f,
+                onValueChange = { opacity = it; settings.overlayOpacity = it },
+            )
+            CheckRow("Показывать исходный текст", showSource) {
+                showSource = it; settings.showSourceText = it
+            }
+        }
+
+        item {
+            SectionTitle("Дополнительно")
+            CheckRow(
+                "Склеивать обрывки фраз",
+                mergeFragments,
+                "Даёт переводчику контекст, но обрывок ждёт продолжения — задержка растёт.",
+            ) { mergeFragments = it; settings.mergeFragments = it }
+
+            CheckRow(
+                "Шумоподавление GTCRN",
+                denoise == DenoiseMode.GTCRN,
+                "Эксперимент. На музыкальном фоне может как помочь, так и ухудшить — " +
+                    "сравните на своём контенте.",
+            ) {
+                denoise = if (it) DenoiseMode.GTCRN else DenoiseMode.OFF
+                settings.denoise = denoise
+            }
+
+            if (sourceLang.supportsPunctuationModel) {
+                CheckRow(
+                    "Восстановление пунктуации",
+                    punctuation,
+                    "Нужно, только если Whisper не ставит знаки сам. Модель ~65 МБ.",
+                ) { punctuation = it; settings.punctuation = it }
+            }
+
+            CheckRow(
+                "Озвучивать перевод",
+                tts,
+                "Системный русский голос. Пока он говорит, распознавание " +
+                    "приостанавливается — иначе приложение услышит само себя.",
+            ) { tts = it; settings.tts = it }
+
+            CheckRow(
+                "Снижать нагрузку при нагреве",
+                thermalThrottle,
+            ) { thermalThrottle = it; settings.thermalThrottle = it }
+        }
+
+        item {
+            SectionTitle("Модели")
+            Text(
+                "Занято на диске: ${store.usedBytes() / 1_000_000} МБ",
+                fontSize = 12.sp,
+            )
+            OutlinedButton(
+                enabled = !running,
+                onClick = { store.deleteAll() },
+            ) { Text("Удалить скачанные модели") }
+        }
+
+        item {
+            SectionTitle("История")
+            if (history.isEmpty()) {
+                Text("Пока пусто.", fontSize = 12.sp)
+            } else {
+                OutlinedButton(onClick = { SessionState.clearHistory() }) {
+                    Text("Очистить")
+                }
+            }
+        }
+
+        items(history.asReversed()) { phrase ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(phrase.translatedText)
+                    if (phrase.sourceText != phrase.translatedText) {
+                        Text(
+                            phrase.sourceText,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(phrase.timings.summary(), fontSize = 10.sp)
+                }
+            }
+        }
+
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+}
+
+@Composable
+private fun <T> ChipRow(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.forEach { option ->
+            FilterChip(
+                selected = option == selected,
+                onClick = { onSelect(option) },
+                label = { Text(label(option), fontSize = 12.sp) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CheckRow(
+    title: String,
+    checked: Boolean,
+    hint: String? = null,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked = checked, onCheckedChange = onChange)
+        Column {
+            Text(title, fontSize = 14.sp)
+            if (hint != null) Text(hint, fontSize = 11.sp)
+        }
+    }
+}
+
+private fun canDrawOverlays(context: Context): Boolean =
+    AndroidSettings.canDrawOverlays(context)
+
+private fun overlayPermissionIntent(context: Context): Intent =
+    Intent(
+        AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+        Uri.parse("package:${context.packageName}"),
+    )
