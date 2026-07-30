@@ -71,7 +71,7 @@ android {
 
 dependencies {
     // sherpa-onnx поставляется как AAR из GitHub Releases и кладётся в app/libs/
-    // скриптом tools/fetch-sherpa.sh (вызывается из CI).
+    // скриптом tools/fetch_sherpa.py (вызывается из CI).
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
 
     implementation(libs.androidx.core.ktx)

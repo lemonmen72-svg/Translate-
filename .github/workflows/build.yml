@@ -6,52 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Разведка: печатает, какие ассеты реально лежат в релизах sherpa-onnx.
-  # Локально это проверить нельзя — dl.google.com и huggingface.co закрыты
+  # Разведка: печатает реальные имена ассетов релизов sherpa-onnx.
+  # Локально это не проверить — dl.google.com и huggingface.co закрыты
   # политикой сети среды разработки.
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Ассеты релизов sherpa-onnx (AAR)
+      - uses: actions/checkout@v4
+      - name: Ассеты релизов sherpa-onnx
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/k2-fsa/sherpa-onnx/releases?per_page=20" \
-          | python3 -c '
-import json, sys
-rels = json.load(sys.stdin)
-for r in rels:
-    aars = [a for a in r.get("assets", []) if a["name"].endswith(".aar")]
-    if not aars:
-        continue
-    print("TAG:", r["tag_name"])
-    for a in aars:
-        print("   ", a["name"], round(a["size"] / 1e6, 1), "MB")
-'
-
-      - name: Ассеты тега asr-models (VAD и Whisper)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for tag in asr-models vad-models punctuation-models speech-enhancement-models; do
-            echo "===== $tag ====="
-            curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/tags/$tag" \
-            | python3 -c '
-import json, sys
-r = json.load(sys.stdin)
-if "assets" not in r:
-    print("нет такого тега"); raise SystemExit
-names = [a["name"] for a in r["assets"]]
-keep = [n for n in names if any(k in n.lower() for k in
-        ("whisper-tiny", "whisper-base", "whisper-small", "silero", "vad",
-         "gtcrn", "punct"))]
-print(len(names), "ассетов всего, релевантных:", len(keep))
-for n in sorted(keep)[:60]:
-    print("   ", n)
-' || echo "тег $tag недоступен"
-          done
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/probe_assets.py
 
   build:
     runs-on: ubuntu-latest
@@ -68,9 +33,7 @@ for n in sorted(keep)[:60]:
       - name: Скачать AAR sherpa-onnx
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          chmod +x tools/fetch-sherpa.sh
-          ./tools/fetch-sherpa.sh
+        run: python3 tools/fetch_sherpa.py
 
       - name: Собрать debug APK
         run: |
@@ -80,8 +43,7 @@ for n in sorted(keep)[:60]:
       - name: Переименовать APK
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/debug/app-debug.apk \
-             "out/OverlayTranslator-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk out/OverlayTranslator-debug.apk
           ls -la out
 
       - uses: actions/upload-artifact@v4
