@@ -1,8 +1,17 @@
 package ru.translate.overlay.tts
 
 /**
- * Озвучка перевода. Две реализации: голос Piper (живее) и системный TTS
- * (ничего не качает, но звучит механически).
+ * Озвучка перевода.
+ *
+ * Ключевое в этом интерфейсе — [speakAndWait]: он возвращает управление только
+ * когда фраза **дочитана до конца**. Без этого невозможно построить очередь, а
+ * без очереди озвучка не работает вообще.
+ *
+ * Почему так. В потоковом режиме реплики приходят каждые 1–3 секунды, а чтение
+ * одного предложения занимает 3–5. В первой версии каждая новая реплика вызывала
+ * stop() и обрывала предыдущую, не дав ей прозвучать, — на слух это выглядело как
+ * «звука нет совсем». Правильное поведение: складывать фразы в очередь и читать
+ * подряд, отставая от видео, но ничего не теряя.
  */
 interface Speaker {
 
@@ -10,12 +19,14 @@ interface Speaker {
     val isSpeaking: Boolean
 
     /**
-     * Проигрывает текст. Для Piper вызов блокирующий, для системного — нет,
-     * поэтому пайплайн не должен полагаться на возврат как на признак конца.
+     * Проигрывает текст и возвращает управление, когда он дочитан.
+     *
+     * [speed] — множитель скорости речи. Очередь поднимает его, когда отстаёт от
+     * видео, чтобы догнать.
      */
-    fun speak(text: String, continuePhrase: Boolean)
+    suspend fun speakAndWait(text: String, speed: Float)
 
-    /** Отменяет проигрывание: устаревший перевод озвучивать незачем. */
+    /** Обрывает проигрывание. Зовётся только при остановке сессии. */
     fun stop()
 
     fun release()
@@ -25,10 +36,8 @@ interface Speaker {
 class PiperSpeaker(private val tts: PiperTts) : Speaker {
     override val isSpeaking: Boolean get() = tts.speaking.get()
 
-    override fun speak(text: String, continuePhrase: Boolean) {
-        if (!continuePhrase) tts.stop()
-        tts.speak(text)
-    }
+    override suspend fun speakAndWait(text: String, speed: Float) =
+        tts.speakAndWait(text, speed)
 
     override fun stop() = tts.stop()
     override fun release() = tts.release()
@@ -38,8 +47,8 @@ class PiperSpeaker(private val tts: PiperTts) : Speaker {
 class SystemSpeaker(private val tts: RussianTts) : Speaker {
     override val isSpeaking: Boolean get() = tts.speaking.get()
 
-    override fun speak(text: String, continuePhrase: Boolean) =
-        tts.speak(text, continuePhrase)
+    override suspend fun speakAndWait(text: String, speed: Float) =
+        tts.speakAndWait(text, speed)
 
     override fun stop() = tts.stop()
     override fun release() = tts.release()

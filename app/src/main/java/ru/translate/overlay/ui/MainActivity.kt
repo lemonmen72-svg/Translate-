@@ -93,6 +93,8 @@ private fun MainScreen(modifier: Modifier = Modifier) {
     var voice by remember { mutableStateOf(settings.voice) }
     var beams by remember { mutableStateOf(settings.beams) }
     var muteWhileSpeaking by remember { mutableStateOf(settings.muteWhileSpeaking) }
+    var speechSpeed by remember { mutableStateOf(settings.speechSpeed) }
+    var speechQueueDepth by remember { mutableStateOf(settings.speechQueueDepth) }
 
     val stage by SessionState.stage.collectAsState()
     val history by SessionState.history.collectAsState()
@@ -101,6 +103,7 @@ private fun MainScreen(modifier: Modifier = Modifier) {
     val loadText by LoadProgress.text.collectAsState()
     val loadPercent by LoadProgress.percent.collectAsState()
     val partial by SessionState.partial.collectAsState()
+    val speechLag by SessionState.speechLag.collectAsState()
 
     val running = stage !is Stage.Idle && stage !is Stage.Error
 
@@ -148,6 +151,9 @@ private fun MainScreen(modifier: Modifier = Modifier) {
             }
             if (partial.isNotBlank()) {
                 Text("Слышу: $partial", fontSize = 12.sp)
+            }
+            if (speechLag > 0) {
+                Text("Озвучка отстаёт на $speechLag фраз", fontSize = 12.sp)
             }
             if (skipped > 0) {
                 Text(
@@ -350,6 +356,34 @@ private fun MainScreen(modifier: Modifier = Modifier) {
                 if (voice.modelId != null) {
                     Text("Загрузка около ${voice.approxMb} МБ", fontSize = 11.sp)
                 }
+                Text(
+                    "Скорость чтения: ${"%.2f".format(speechSpeed)}×",
+                    fontSize = 12.sp,
+                )
+                Slider(
+                    value = speechSpeed,
+                    valueRange = 0.7f..1.6f,
+                    onValueChange = { speechSpeed = it; settings.speechSpeed = it },
+                )
+
+                Text("Глубина очереди озвучки: $speechQueueDepth фраз", fontSize = 12.sp)
+                Text(
+                    "Озвучка не может успевать за видео: русский длиннее " +
+                        "английского, и фразу нельзя прочитать раньше, чем она " +
+                        "произнесена. Поэтому фразы читаются подряд с отставанием. " +
+                        "Больше очередь — меньше пропусков, но сильнее отставание.",
+                    fontSize = 11.sp,
+                )
+                Slider(
+                    value = speechQueueDepth.toFloat(),
+                    valueRange = 1f..12f,
+                    steps = 10,
+                    onValueChange = {
+                        speechQueueDepth = it.toInt()
+                        settings.speechQueueDepth = speechQueueDepth
+                    },
+                )
+
                 CheckRow(
                     "Не слушать во время озвучки",
                     muteWhileSpeaking,

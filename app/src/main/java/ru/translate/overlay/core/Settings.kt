@@ -63,10 +63,31 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_PUNCT, false)
         set(value) = prefs.edit().putBoolean(KEY_PUNCT, value).apply()
 
-    /** Озвучка перевода. По умолчанию выключена — см. docs/01-research.md §7. */
+    /**
+     * Озвучка перевода. Включена по умолчанию.
+     *
+     * Раньше была выключена из-за петли обратной связи — приложение слышало свой
+     * же голос. Петля закрыта: озвучка идёт с usage ASSISTANT, которого нет в
+     * списке захватываемых, поэтому прятать функцию за галочкой больше незачем.
+     */
     var tts: Boolean
-        get() = prefs.getBoolean(KEY_TTS, false)
+        get() = prefs.getBoolean(KEY_TTS, true)
         set(value) = prefs.edit().putBoolean(KEY_TTS, value).apply()
+
+    /** Базовая скорость чтения. Очередь поднимает её, когда отстаёт. */
+    var speechSpeed: Float
+        get() = prefs.getFloat(KEY_SPEECH_SPEED, 1.0f)
+        set(value) = prefs.edit().putFloat(KEY_SPEECH_SPEED, value.coerceIn(0.7f, 1.6f)).apply()
+
+    /**
+     * Сколько фраз держать в очереди озвучки.
+     *
+     * Больше — меньше пропусков, но сильнее отставание от видео. Меньше — звук
+     * держится ближе к картинке, но чаще теряются фразы.
+     */
+    var speechQueueDepth: Int
+        get() = prefs.getInt(KEY_SPEECH_QUEUE, 4)
+        set(value) = prefs.edit().putInt(KEY_SPEECH_QUEUE, value.coerceIn(1, 12)).apply()
 
     /**
      * Склеивать короткие обрывки фраз перед переводом.
@@ -126,6 +147,8 @@ class Settings(context: Context) {
         const val KEY_BEAMS = "mt_beams"
         const val KEY_VOICE = "voice"
         const val KEY_MUTE_SPEAKING = "mute_while_speaking"
+        const val KEY_SPEECH_SPEED = "speech_speed"
+        const val KEY_SPEECH_QUEUE = "speech_queue_depth"
         const val KEY_OPACITY = "overlay_opacity"
         const val KEY_FONT = "overlay_font_sp"
         const val KEY_SHOW_SOURCE = "show_source_text"

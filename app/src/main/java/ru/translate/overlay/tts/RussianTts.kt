@@ -2,51 +2,31 @@ package ru.translate.overlay.tts
 
 import android.content.Context
 import android.media.AudioAttributes
-import android.media.AudioManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 
 /**
- * Озвучка перевода одним русским голосом.
+ * Озвучка системным TTS Android.
  *
- * Взят системный TTS Android, а не Silero или Piper из ТЗ. Причины:
- *  - русский голос уже есть почти на любом устройстве, ничего не качаем и не
- *    держим в оперативной памяти;
- *  - у моделей Silero лицензия CC BY-NC, что закрывает любое распространение;
- *  - Piper требует каталог espeak-ng-data — десятки мегабайт мелких файлов,
- *    которые пришлось бы тащить в APK ради необязательной функции.
- * Цена: голос не такой естественный, как у Silero, и это компонент системы, а
- * не наш собственный. Замена на Piper или Silero — понятный путь улучшения.
+ * Запасной вариант: звучит механически, зато ничего не качает и работает там, где
+ * модель Piper почему-то не поднялась.
  *
- * Главная проблема озвучки: наш собственный русский голос играется как аудио и
- * попадает в тот же захват через AudioPlaybackCaptureConfiguration — пайплайн
- * начинает распознавать сам себя.
- *
- * Сначала это лечилось грубо: пока идёт озвучка, кадры в VAD не подавались. На
- * практике вышло хуже болезни — озвучка длинной фразы занимает десятки секунд, и
- * всё это время приложение глухое, из-за чего перевод выглядит как «начинается
- * только когда остановишь видео».
- *
- * Правильное решение: проигрывать озвучку с usage, которого нет в списке
- * захватываемых. Захват ловит USAGE_MEDIA, USAGE_GAME и USAGE_UNKNOWN, а
- * USAGE_ASSISTANT не ловит — значит свой голос в пайплайн не попадёт, и слушать
- * можно не переставая. Флаг [speaking] остаётся для индикатора и для устройств,
- * где прошивка всё равно захватывает наш поток: на них можно включить
- * «Не слушать во время озвучки».
+ * Голос проигрывается с usage ASSISTANT, которого нет в списке захватываемых
+ * (захват ловит MEDIA, GAME и UNKNOWN). Поэтому свой голос в пайплайн не
+ * попадает, и глохнуть на время озвучки не нужно.
  */
 class RussianTts(context: Context) {
 
     private val appContext: Context = context.applicationContext
 
-    private val audioManager =
-        appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-    /** Идёт ли проигрывание прямо сейчас: пайплайн обязан на это смотреть. */
+    /** Идёт ли проигрывание прямо сейчас. */
     val speaking = AtomicBoolean(false)
 
     private var ready = false
@@ -54,11 +34,28 @@ class RussianTts(context: Context) {
 
     private var counter = 0L
 
+    /**
+     * Ожидающие завершения фразы.
+     *
+     * Нужны потому, что TextToSpeech.speak возвращает управление сразу, а очереди
+     * озвучки необходимо знать, когда фраза действительно дочитана: иначе
+     * следующая наложится на текущую.
+     */
+    private val waiting = ConcurrentHashMap<String, Continuation<Unit>>()
+
     suspend fun init(): Boolean = suspendCancellableCoroutine { cont ->
-        val tts = TextToSpeech(appContext) { status ->
-            ready = status == TextToSpeech.SUCCESS
-            if (ready) {
-                val result = engine?.setLanguage(Locale("ru", "RU"))
+        // Слушатель прогресса и атрибуты выставляются в колбэке инициализации, а
+        // не сразу после конструктора: колбэк может сработать раньше, чем
+        // присвоится поле engine, и тогда настройки применились бы к null.
+        // В первой версии из-за этого не выставлялся русский язык, и системный
+        // голос читал русский текст английским движком.
+        var created: TextToSpeech? = null
+        created = TextToSpeech(appContext) { status ->
+            val engineNow = created
+            ready = status == TextToSpeech.SUCCESS && engineNow != null
+            if (ready && engineNow != null) {
+                configure(engineNow)
+                val result = engineNow.setLanguage(Locale("ru", "RU"))
                 if (result == TextToSpeech.LANG_MISSING_DATA ||
                     result == TextToSpeech.LANG_NOT_SUPPORTED
                 ) {
@@ -68,8 +65,11 @@ class RussianTts(context: Context) {
             }
             if (cont.isActive) cont.resume(ready)
         }
-        engine = tts
-        // Ключевая настройка: наш голос не должен попадать в собственный захват.
+        engine = created
+        cont.invokeOnCancellation { runCatching { created.shutdown() } }
+    }
+
+    private fun configure(tts: TextToSpeech) {
         runCatching {
             tts.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -85,48 +85,56 @@ class RussianTts(context: Context) {
 
             override fun onDone(utteranceId: String?) {
                 speaking.set(false)
+                finish(utteranceId)
             }
 
             @Deprecated("Требуется базовым классом")
             override fun onError(utteranceId: String?) {
                 speaking.set(false)
+                finish(utteranceId)
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                speaking.set(false)
+                finish(utteranceId)
+            }
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                speaking.set(false)
+                finish(utteranceId)
             }
         })
-        cont.invokeOnCancellation { runCatching { tts.shutdown() } }
+    }
+
+    private fun finish(utteranceId: String?) {
+        val id = utteranceId ?: return
+        waiting.remove(id)?.let { runCatching { it.resume(Unit) } }
     }
 
     /**
-     * Проигрывает текст. Возвращает управление сразу.
+     * Проигрывает текст и ждёт, пока он будет дочитан.
      *
-     * [continuePhrase] = false начинает новую фразу и сбрасывает очередь:
-     * устаревший перевод озвучивать бессмысленно, субтитры к видео живут
-     * считаные секунды. true дочитывает следующее предложение той же фразы.
+     * [speed] — множитель скорости речи: очередь поднимает его, когда отстаёт.
      */
-    fun speak(text: String, continuePhrase: Boolean = false) {
-        val tts = engine ?: return
-        if (!ready || text.isBlank()) return
-        speaking.set(true)
-        counter += 1
-        val mode =
-            if (continuePhrase) TextToSpeech.QUEUE_ADD else TextToSpeech.QUEUE_FLUSH
-        tts.speak(text, mode, null, "u$counter")
-    }
+    suspend fun speakAndWait(text: String, speed: Float) {
+        val tts = engine
+        if (tts == null || !ready || text.isBlank()) return
 
-    /** Приглушает исходную дорожку, чтобы два голоса не накладывались. */
-    fun duckOriginal(duck: Boolean) {
-        runCatching {
-            if (duck) {
-                audioManager.adjustStreamVolume(
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.ADJUST_LOWER,
-                    0,
-                )
-            } else {
-                audioManager.adjustStreamVolume(
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.ADJUST_RAISE,
-                    0,
-                )
+        val id = "u${++counter}"
+        runCatching { tts.setSpeechRate(speed.coerceIn(0.5f, 2.0f)) }
+
+        suspendCancellableCoroutine<Unit> { cont ->
+            waiting[id] = cont
+            cont.invokeOnCancellation { waiting.remove(id) }
+            speaking.set(true)
+            // QUEUE_ADD, а не FLUSH: последовательность обеспечивает очередь
+            // снаружи, и обрывать уже читаемую фразу нельзя — именно из-за
+            // обрывов озвучка не работала совсем.
+            val code = tts.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+            if (code != TextToSpeech.SUCCESS) {
+                waiting.remove(id)
+                speaking.set(false)
+                if (cont.isActive) cont.resume(Unit)
             }
         }
     }
@@ -134,14 +142,15 @@ class RussianTts(context: Context) {
     fun stop() {
         runCatching { engine?.stop() }
         speaking.set(false)
+        // Пробуждаем всех ожидающих, иначе очередь озвучки повиснет навсегда.
+        waiting.keys.toList().forEach { finish(it) }
     }
 
     fun release() {
-        runCatching { engine?.stop() }
+        stop()
         runCatching { engine?.shutdown() }
         engine = null
         ready = false
-        speaking.set(false)
     }
 
     private companion object {

@@ -94,6 +94,14 @@ object SessionState {
     /** Сколько сегментов отброшено за сессию: галлюцинации плюс back-pressure. */
     val skipped: StateFlow<Int> = _skipped.asStateFlow()
 
+    private val _speechLag = MutableStateFlow(0)
+
+    /**
+     * Сколько фраз ждёт озвучки. Показывается пользователю: озвучка неизбежно
+     * отстаёт от видео, и лучше видеть насколько, чем догадываться.
+     */
+    val speechLag: StateFlow<Int> = _speechLag.asStateFlow()
+
     private val _partial = MutableStateFlow("")
 
     /**
@@ -125,6 +133,10 @@ object SessionState {
         _history.update { (it + phrase).takeLast(MAX_HISTORY) }
     }
 
+    fun setSpeechLag(count: Int) {
+        _speechLag.value = count.coerceAtLeast(0)
+    }
+
     fun setPartial(text: String) {
         _partial.value = text
     }
@@ -146,6 +158,7 @@ object SessionState {
         _stage.value = Stage.Idle
         _current.value = null
         _partial.value = ""
+        _speechLag.value = 0
         _skipped.value = 0
         _dropped.value = 0
     }

@@ -89,6 +89,7 @@ class Pipeline(
     private var denoiser: Denoiser? = null
     private var punctuator: Punctuator? = null
     private var speaker: Speaker? = null
+    private var speech: SpeechQueue? = null
 
     private var heldFragment: String? = null
 
@@ -106,6 +107,19 @@ class Pipeline(
         }
 
         SessionState.setStage(Stage.Listening)
+
+        // Озвучка живёт в своей корутине и читает фразы подряд, не обрывая
+        // начатое. Раньше она вызывалась прямо из потребителя переводов, и каждая
+        // новая реплика убивала предыдущую — при интервале реплик 1–3 секунды и
+        // чтении предложения 3–5 секунд не успевала прозвучать ни одна.
+        speaker?.let { voice ->
+            speech = SpeechQueue(
+                speaker = voice,
+                baseSpeed = settings.speechSpeed,
+                maxPending = settings.speechQueueDepth,
+            ).also { it.start(scope) }
+        }
+
         val consumer = scope.launch(Dispatchers.Default) { consumeUtterances() }
 
         try {
@@ -286,18 +300,15 @@ class Pipeline(
             )
             SessionState.publish(phrase)
 
-            speaker?.let { voice ->
-                SessionState.setStage(Stage.Speaking)
-                // Внутри одной реплики дочитываем, между репликами — обрываем:
-                // устаревший перевод озвучивать бессмысленно.
-                withContext(Dispatchers.IO) {
-                    voice.speak(translated, continuePhrase = index > 0)
-                }
-            }
+            // Только ставим в очередь: ждать здесь нельзя, иначе перевод встанет
+            // на время чтения, а вместе с ним перестанут обновляться субтитры.
+            speech?.enqueue(translated)
             index++
         }
 
-        SessionState.setStage(Stage.Listening)
+        SessionState.setStage(
+            if (speaker?.isSpeaking == true) Stage.Speaking else Stage.Listening
+        )
     }
 
     private fun mergeWithHeld(text: String): String? {
@@ -451,6 +462,7 @@ class Pipeline(
     }
 
     fun release() {
+        runCatching { speech?.stop() }
         runCatching { streaming?.release() }
         runCatching { vad?.release() }
         runCatching { offlineAsr?.release() }
@@ -465,6 +477,7 @@ class Pipeline(
         punctuator = null
         translator = null
         speaker = null
+        speech = null
         pending.set(null)
         heldFragment = null
     }
