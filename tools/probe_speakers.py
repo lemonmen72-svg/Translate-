@@ -44,6 +44,10 @@ ASSET_GROUPS = {
         "3dspeaker",
         "nemo_en_titanet",
         "nemo_en_speakerverification",
+        "voxceleb",
+        "cnceleb",
+        "eres2net",
+        "cam++",
     ),
     "Сегментация речи для диаризации": (
         "pyannote-segmentation",
@@ -103,16 +107,27 @@ def probe_assets() -> dict[str, list[tuple[str, float]]]:
 
     hits: dict[str, list[tuple[str, float]]] = {g: [] for g in ASSET_GROUPS}
     seen: set[str] = set()
-    for page in (1, 2, 3, 4):
-        url = f"https://api.github.com/repos/{REPO}/releases?per_page=30&page={page}"
+
+    # Постраничный перебор до нужного релиза не доходит: модели эмбеддингов лежат в
+    # релизе 2023 года, а с тех пор их вышло больше сотни. Поэтому теги спрашиваем
+    # напрямую. Опечатка в «recongition» — в самом апстриме, не здесь.
+    urls = [
+        f"https://api.github.com/repos/{REPO}/releases/tags/speaker-recongition-models",
+        f"https://api.github.com/repos/{REPO}/releases/tags/speaker-segmentation-models",
+    ]
+    urls += [
+        f"https://api.github.com/repos/{REPO}/releases?per_page=30&page={p}"
+        for p in (1, 2, 3, 4)
+    ]
+
+    for url in urls:
         try:
             with urllib.request.urlopen(request(url), timeout=120) as resp:
-                releases = json.load(resp)
+                payload = json.load(resp)
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            log(f"страница {page}: не прочитана ({exc})")
+            log(f"{url.rsplit('/', 1)[-1]}: не прочитан ({exc})")
             continue
-        if not releases:
-            break
+        releases = payload if isinstance(payload, list) else [payload]
         for rel in releases:
             for asset in rel.get("assets", []):
                 name = asset["name"]
