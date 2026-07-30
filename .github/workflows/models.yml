@@ -1,0 +1,126 @@
+name: Подготовка моделей
+
+# Запускается вручную: сборка тяжёлая (около гигабайта в сумме) и нужна редко —
+# только когда меняется состав моделей.
+on:
+  workflow_dispatch:
+    inputs:
+      whisper:
+        description: Какие модели Whisper собрать
+        type: choice
+        default: all
+        options: [all, whisper-tiny, whisper-base, whisper-small]
+      opus:
+        description: Собирать ли модели Opus-MT для режима точности
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  small-models:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: VAD, шумоподавление, пунктуация
+        run: |
+          python3 tools/build_models.py vad
+          python3 tools/build_models.py denoiser
+          python3 tools/build_models.py punct
+          rm -f models_out/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models-small
+          path: models_out/
+          retention-days: 1
+
+  whisper:
+    runs-on: ubuntu-latest
+    strategy:
+      # Модели независимы, но раннеры не бесконечны — по одной за раз.
+      max-parallel: 3
+      matrix:
+        model: [whisper-tiny, whisper-base, whisper-small]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Освободить место на диске
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk || true
+          df -h /
+      - name: Собрать ${{ matrix.model }}
+        if: >-
+          github.event.inputs.whisper == 'all' ||
+          github.event.inputs.whisper == matrix.model
+        run: |
+          python3 tools/build_models.py whisper --only ${{ matrix.model }}
+          rm -f models_out/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: >-
+          github.event.inputs.whisper == 'all' ||
+          github.event.inputs.whisper == matrix.model
+        with:
+          name: models-${{ matrix.model }}
+          path: models_out/
+          retention-days: 1
+
+  opus:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.opus == 'true'
+    strategy:
+      matrix:
+        pair: [en-ru, ja-ru, zh-en]
+      # Одна пара может не найтись на Hugging Face — остальные всё равно нужны.
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Поставить optimum
+        run: |
+          python -m pip install --upgrade pip
+          pip install "optimum[onnxruntime]" transformers sentencepiece \
+                      torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "optimum[onnxruntime]" transformers sentencepiece
+      - name: Экспортировать ${{ matrix.pair }}
+        run: |
+          python3 tools/build_models.py opus --only ${{ matrix.pair }}
+          rm -f models_out/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models-opus-${{ matrix.pair }}
+          path: models_out/
+          retention-days: 1
+
+  release:
+    needs: [small-models, whisper, opus]
+    # Пары Opus-MT могут не собраться целиком — релиз всё равно нужен.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+          pattern: models-*
+          merge-multiple: true
+      - name: Собрать каталог выдачи и манифест
+        run: |
+          mkdir -p models_out
+          cp -v downloaded/* models_out/ 2>/dev/null || true
+          ls -la models_out
+          python3 tools/build_models.py manifest
+          cat models_out/manifest.json
+      - name: Опубликовать релиз моделей
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=models-v1
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" models_out/* --clobber
+          else
+            gh release create "$tag" models_out/* \
+              --title "Модели для офлайн-переводчика" \
+              --notes "Распакованные модели: VAD, Whisper, шумоподавление, пунктуация, Opus-MT. Собрано workflow «Подготовка моделей»."
+          fi
