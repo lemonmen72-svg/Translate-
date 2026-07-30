@@ -40,8 +40,13 @@ class SubtitleOverlay(
     private var sourceView: TextView? = null
     private var collapsed = false
 
+    /**
+     * Ширина по содержимому, а не MATCH_PARENT: при MATCH_PARENT горизонтальное
+     * перетаскивание уводит окно за край экрана. Максимальная ширина текста
+     * ограничена отдельно, чтобы длинная фраза не растянула окно на всю ширину.
+     */
     private val layoutParams = WindowManager.LayoutParams(
-        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         // NOT_FOCUSABLE обязательно: иначе оверлей забирает ввод у приложения
@@ -77,16 +82,20 @@ class SubtitleOverlay(
             text = "Слушаю"
         }
 
+        val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.9f).toInt()
+
         val translation = TextView(context).apply {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp)
             setShadowLayer(6f, 0f, 1f, Color.BLACK)
+            maxWidth = maxTextWidth
             text = ""
         }
 
         val sourceText = TextView(context).apply {
             setTextColor(Color.parseColor("#9AA3B2"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, settings.overlayFontSp - 3f)
+            maxWidth = maxTextWidth
             visibility = if (settings.showSourceText) View.VISIBLE else View.GONE
             text = ""
         }
@@ -136,8 +145,19 @@ class SubtitleOverlay(
                     val dx = (event.rawX - touchX).roundToInt()
                     val dy = (event.rawY - touchY).roundToInt()
                     if (abs(dx) > TAP_SLOP || abs(dy) > TAP_SLOP) moved = true
-                    layoutParams.x = startX + dx
-                    layoutParams.y = startY + dy
+                    // Не даём утащить окно целиком за край: полоска шириной
+                    // MIN_VISIBLE всегда остаётся на экране, иначе вернуть
+                    // оверлей будет нечем.
+                    val metrics = context.resources.displayMetrics
+                    val minVisible = dp(MIN_VISIBLE_DP)
+                    layoutParams.x = (startX + dx).coerceIn(
+                        minVisible - container.width,
+                        metrics.widthPixels - minVisible,
+                    )
+                    layoutParams.y = (startY + dy).coerceIn(
+                        0,
+                        metrics.heightPixels - minVisible,
+                    )
                     root?.let { runCatching { windowManager.updateViewLayout(it, layoutParams) } }
                     true
                 }
@@ -204,5 +224,6 @@ class SubtitleOverlay(
 
     private companion object {
         const val TAP_SLOP = 12
+        const val MIN_VISIBLE_DP = 48
     }
 }
