@@ -8,6 +8,13 @@ on:
 permissions:
   contents: write
 
+# Сборки на одной ветке кладут APK в один и тот же релиз через --clobber, и
+# параллельные прогоны затирали бы друг друга. Актуальна всегда последняя, так
+# что устаревшие отменяем.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Разведка: печатает реальные имена ассетов релизов sherpa-onnx.
   # Локально это не проверить — dl.google.com и huggingface.co закрыты
