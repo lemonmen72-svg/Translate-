@@ -91,7 +91,10 @@ class Pipeline(
     private var speaker: Speaker? = null
     private var speech: SpeechQueue? = null
 
-    private var heldFragment: String? = null
+    /** Обрывок фразы, ждущий продолжения, и момент, когда он пришёл. */
+    private class Held(val text: String, val atMs: Long)
+
+    private val heldFragment = AtomicReference<Held?>(null)
 
     suspend fun run(projection: MediaProjection, scope: CoroutineScope) {
         val lang = settings.sourceLang
@@ -130,6 +133,9 @@ class Pipeline(
             }
         } finally {
             flushTail()
+            // Обрывок, зависший в ожидании продолжения, надо перевести: иначе
+            // последняя фраза сессии просто исчезнет.
+            runCatching { flushHeld(force = true) }
             consumer.cancel()
         }
     }
@@ -246,11 +252,23 @@ class Pipeline(
 
     private suspend fun consumeUtterances() {
         while (currentCoroutineContext().isActive) {
-            signal.receive()
+            // Ожидание с таймаутом, а не просто receive: если обрывок фразы ждёт
+            // продолжения, а речь кончилась, продолжения не будет никогда, и без
+            // будильника обрывок молча пропал бы.
+            val woken = kotlinx.coroutines.withTimeoutOrNull(HOLD_MAX_MS) { signal.receive() }
+
+            // Слот вычитывается в обоих случаях, а не только по сигналу: отмена
+            // receive по таймауту может съесть сигнал, и тогда реплика пролежала бы
+            // в слоте до следующей.
             while (true) {
                 val utterance = pending.getAndSet(null) ?: break
                 runCatching { translateAndShow(utterance) }
                     .onFailure { Log.e(TAG, "Реплика не обработалась", it) }
+            }
+
+            if (woken == null) {
+                runCatching { flushHeld(force = false) }
+                    .onFailure { Log.e(TAG, "Обрывок не обработался", it) }
             }
         }
     }
@@ -275,6 +293,11 @@ class Pipeline(
             sourceText = merged
         }
 
+        emit(sourceText, utterance, punctuationMs)
+    }
+
+    /** Перевод по предложениям и вывод: общий хвост для обычной реплики и обрывка. */
+    private suspend fun emit(sourceText: String, utterance: Utterance, punctuationMs: Long) {
         val needsMt = settings.sourceLang.needsTranslation
         if (needsMt) SessionState.setStage(Stage.Translating)
 
@@ -311,18 +334,39 @@ class Pipeline(
         )
     }
 
+    /**
+     * Склейка обрывков фразы перед переводом.
+     *
+     * Распознаватель иногда заканчивает реплику на середине предложения — без
+     * точки и без сказуемого. Модель перевода обучена на целых предложениях, и на
+     * обрывке она теряет и род, и связь слов: ровно те ошибки, что были видны на
+     * ролике. Поэтому обрывок ждёт продолжения и переводится вместе с ним.
+     *
+     * Ожидание ограничено HOLD_MAX_MS. Держать обрывок дольше нельзя: на паузе в
+     * диалоге продолжения не будет, и текст пропал бы совсем. Возвращает готовый к
+     * переводу текст либо null, если решено ждать.
+     */
     private fun mergeWithHeld(text: String): String? {
-        val held = heldFragment
-        if (held != null) {
-            heldFragment = null
-            return "$held $text".trim()
+        val held = heldFragment.getAndSet(null)
+        val combined = if (held == null) text.trim() else "${held.text} ${text.trim()}".trim()
+        val startedAtMs = held?.atMs ?: System.currentTimeMillis()
+        val waitedMs = System.currentTimeMillis() - startedAtMs
+
+        val last = combined.lastOrNull()
+        val finished = last != null && last in SENTENCE_END
+        if (finished || combined.length >= FRAGMENT_MAX_LEN || waitedMs >= HOLD_MAX_MS) {
+            return combined
         }
-        val last = text.lastOrNull()
-        val looksUnfinished =
-            text.length < FRAGMENT_MAX_LEN && (last == null || last !in SENTENCE_END)
-        if (!looksUnfinished) return text
-        heldFragment = text
+        heldFragment.set(Held(combined, startedAtMs))
         return null
+    }
+
+    /** Переводит зависший обрывок, когда продолжение так и не пришло. */
+    private suspend fun flushHeld(force: Boolean) {
+        val held = heldFragment.get() ?: return
+        if (!force && System.currentTimeMillis() - held.atMs < HOLD_MAX_MS) return
+        if (!heldFragment.compareAndSet(held, null)) return
+        emit(held.text, Utterance(held.text, System.currentTimeMillis(), 0, 0), 0)
     }
 
     private suspend fun prepare(lang: SourceLang, profile: Profile) {
@@ -481,12 +525,22 @@ class Pipeline(
         speaker = null
         speech = null
         pending.set(null)
-        heldFragment = null
+        heldFragment.set(null)
     }
 
     private companion object {
         const val TAG = "Pipeline"
-        const val FRAGMENT_MAX_LEN = 30
+
+        /**
+         * Порог, после которого текст уже не считается обрывком и переводится как
+         * есть. Ждать продолжения для длинного куска бессмысленно: там наверняка
+         * есть законченная мысль, а задержка растёт.
+         */
+        const val FRAGMENT_MAX_LEN = 60
+
+        /** Сколько обрывок ждёт продолжения, прежде чем его переведут как есть. */
+        const val HOLD_MAX_MS = 1200L
+
         const val SENTENCE_END = ".!?…。！？»\")]"
     }
 }
