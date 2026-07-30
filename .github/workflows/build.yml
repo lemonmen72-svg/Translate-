@@ -63,10 +63,18 @@ jobs:
           fi
           exit $status
 
-      - name: Переименовать APK
+      # Версия попадает в имя файла: по присланному APK должно быть видно, что
+      # в нём собрано, без установки и без сверки хешей.
+      - name: Переименовать APK с версией
+        id: apk
         run: |
+          eval "$(./gradlew -q :app:printVersion | grep -E '^VERSION_(NAME|CODE)=')"
+          name="OverlayTranslator-${VERSION_NAME}-build${VERSION_CODE}-${GITHUB_SHA::8}.apk"
           mkdir -p out
-          cp app/build/outputs/apk/debug/app-debug.apk out/OverlayTranslator-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk "out/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           ls -la out
 
       - uses: actions/upload-artifact@v4
@@ -84,11 +92,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag=apk-latest
-          notes="Debug-сборка из коммита ${GITHUB_SHA::8}."
+          version="${{ steps.apk.outputs.version }}"
+          code="${{ steps.apk.outputs.code }}"
+          notes="Версия $version (сборка $code), коммит ${GITHUB_SHA::8}."
           if gh release view "$tag" >/dev/null 2>&1; then
+            # Имя файла теперь содержит версию, поэтому старые APK не
+            # перезаписываются сами по себе — удаляем их, чтобы в релизе всегда
+            # лежала ровно одна актуальная сборка.
+            gh release view "$tag" --json assets \
+              --jq '.assets[].name | select(endswith(".apk"))' \
+              | while read -r old; do
+                  [ "$old" = "${{ steps.apk.outputs.name }}" ] && continue
+                  echo "удаляю старый ассет $old"
+                  gh release delete-asset "$tag" "$old" --yes || true
+                done
             gh release upload "$tag" out/*.apk --clobber
-            gh release edit "$tag" --notes "$notes"
+            gh release edit "$tag" --title "APK $version" --notes "$notes"
           else
             gh release create "$tag" out/*.apk \
-              --title "Последняя сборка APK" --notes "$notes"
+              --title "APK $version" --notes "$notes"
           fi

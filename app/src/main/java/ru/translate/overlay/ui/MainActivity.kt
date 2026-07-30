@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ru.translate.overlay.BuildConfig
 import ru.translate.overlay.core.AsrMode
 import ru.translate.overlay.core.DenoiseMode
 import ru.translate.overlay.core.LoadProgress
@@ -129,6 +130,14 @@ private fun MainScreen(modifier: Modifier = Modifier) {
                 "Переводчик поверх",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
+            )
+            // Версия и коммит: по ним видно, что именно установлено, без
+            // копания в настройках Android.
+            Text(
+                "версия ${BuildConfig.VERSION_NAME} " +
+                    "(сборка ${BuildConfig.VERSION_CODE}, ${BuildConfig.GIT_SHA})",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
                 stage.label,

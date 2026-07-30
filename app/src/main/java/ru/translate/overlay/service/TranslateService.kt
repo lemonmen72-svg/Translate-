@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import ru.translate.overlay.App
+import ru.translate.overlay.BuildConfig
 import ru.translate.overlay.R
 import ru.translate.overlay.core.Pipeline
 import ru.translate.overlay.core.SessionState
@@ -239,7 +240,9 @@ class TranslateService : LifecycleService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, App.CHANNEL_ID)
-            .setContentTitle(getString(R.string.app_name))
+            .setContentTitle(
+                "${getString(R.string.app_name)} ${BuildConfig.VERSION_NAME}"
+            )
             .setContentText(stage.label)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentIntent(open)

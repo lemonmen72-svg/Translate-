@@ -4,6 +4,17 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Версия задаётся здесь одним местом: отсюда её берут и манифест, и интерфейс,
+// и имя файла APK. Иначе они разъезжаются, и по присланному файлу становится
+// непонятно, что именно в нём собрано.
+val appVersionName = "0.2.0"
+val appVersionCode = 2
+
+// Короткий хеш коммита: в CI приходит из окружения, локально его нет.
+// Нужен, чтобы по установленному приложению можно было точно сказать, из какого
+// коммита он собран.
+val gitSha: String = (System.getenv("GITHUB_SHA") ?: "local").take(8)
+
 android {
     namespace = "ru.translate.overlay"
     compileSdk = 35
@@ -14,8 +25,10 @@ android {
         // ниже приложение работать не может физически.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
 
         ndk {
             // Только arm64. 32-битный ARM добавлял к APK ещё 41 МБ нативных
@@ -26,9 +39,32 @@ android {
         }
     }
 
+    signingConfigs {
+        // Постоянный ключ, лежащий в репозитории.
+        //
+        // Иначе обновление невозможно: AGP генерирует debug-ключ на лету в
+        // ~/.android/debug.keystore, а раннер GitHub каждый раз чистый — значит
+        // каждая сборка подписана НОВЫМ ключом. Android отказывается ставить APK
+        // поверх уже установленного приложения с другой подписью, и пользователь
+        // видит только «Приложение не установлено» без объяснения причины.
+        //
+        // Пароль лежит рядом с ключом открытым текстом, и это осознанно: ключ
+        // самоподписанный и служит только для того, чтобы подпись не менялась
+        // между сборками. Приложение не публикуется в Play Store, так что
+        // подменять им нечего. Для публикации понадобился бы отдельный ключ,
+        // которого в репозитории быть не должно.
+        create("stable") {
+            storeFile = file("signing/overlay-translator.jks")
+            storePassword = "overlaytranslator"
+            keyAlias = "overlay"
+            keyPassword = "overlaytranslator"
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
         }
         release {
             isMinifyEnabled = true
@@ -37,9 +73,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Подписываем debug-ключом: приложение не публикуется, но
-            // release-сборка должна устанавливаться без ручной подписи.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("stable")
         }
     }
 
@@ -54,6 +88,9 @@ android {
 
     buildFeatures {
         compose = true
+        // Нужен для BuildConfig.VERSION_NAME и GIT_SHA в интерфейсе.
+        // В AGP 8 по умолчанию выключен.
+        buildConfig = true
     }
 
     packaging {
@@ -99,4 +136,12 @@ dependencies {
 
     // Бэкенд перевода «максимальное качество»: Opus-MT в ONNX.
     implementation(libs.onnxruntime.android)
+}
+
+// Печатает версию для CI: по ней собирается имя файла APK.
+tasks.register("printVersion") {
+    doLast {
+        println("VERSION_NAME=$appVersionName")
+        println("VERSION_CODE=$appVersionCode")
+    }
 }
